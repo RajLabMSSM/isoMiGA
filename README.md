@@ -34,19 +34,19 @@ Genotype quality control: https://github.com/RajLabMSSM/Genotype_QC_Pipeline_2.0
 
 ## Long-read RNA-seq isoforms
 
-[script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/describe_stringtie.Rmd)
+[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/describe_stringtie.Rmd)
 |
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
 ## Genotype QC
 
-[script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/genotype_qc.Rmd)
+[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/genotype_qc.Rmd)
 |
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
 ## Mass spectrometry
 
-[script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/explore_proteomics.Rmd)
+[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/explore_proteomics.Rmd)
 |
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
@@ -56,25 +56,25 @@ todo
 
 ## MESC
 
-[script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/MESC.Rmd)
+[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/MESC.Rmd)
 |
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
 ## QTL Mapping
 
-[script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/explore_mmQTL_results.Rmd)
+[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/explore_mmQTL_results.Rmd)
 |
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
 ## GWAS Colocalization
 
-[script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/COLOC.Rmd)
+[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/COLOC.Rmd)
 |
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
 ## Visualizing QTLs
 
-[script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/QTL_schematic_plots.Rmd)
+[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/QTL_schematic_plots.Rmd)
 |
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
