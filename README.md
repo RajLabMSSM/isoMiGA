@@ -52,8 +52,9 @@ Genotype quality control: https://github.com/RajLabMSSM/Genotype_QC_Pipeline_2.0
 
 ## Differential analyses
 
-todo
-
+[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/IFNg_ipsc_DE_salmon_combined_fig3.Rmd)
+|
+[html](https://RajLabMSSM.github.io/isoMiGA/html/)
 ## MESC
 
 [script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/MESC.Rmd)

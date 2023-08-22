@@ -1,0 +1,351 @@
+---
+title: "IFNg iPSC DEGs"
+output: html_notebook
+---
+
+Load libraries
+```{r message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(DESeq2)
+library(edgeR)
+library(data.table)
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+library(ggrepel)
+```
+
+
+Load data
+```{r message=FALSE, warning=FALSE}
+#ipsc combined salmon counts
+load("/sc/arion/projects/als-omics/microglia_isoseq/Erica/salmon_results_combined/ipsc_results/ipsc_results_combined_salmon_counts.RData")
+
+#GENCODE annotations
+gencode <- rtracklayer::import("/sc/arion/projects/ad-omics/data/references/hg38_reference/GENCODE/gencode.v38.primary_assembly/gencode.v38.primary_assembly.annotation.gtf")
+gencode <- as.data.frame(gencode)
+gencode <- subset(gencode, select = c('gene_id', 'gene_name'))
+gencode <- unique(gencode)
+colnames(gencode) <- c("ensembl", "gene_name")
+
+#combined annotations
+annotations <- read_table2("/sc/arion/projects/als-omics/microglia_isoseq/mmQTL-pipeline/input/gencode_novel_transcript_pheno_meta.tsv")
+names(annotations)[4] <- "transcript_id"
+names(annotations)[5] <- "gene_id"
+annotations$gene_name <- gsub(" ", "", paste(annotations$gene_id, "_", annotations$chr, ":", annotations$start, "-", annotations$end))
+
+#metadata
+meta <- read_tsv("/sc/arion/projects/als-omics/microglia_isoseq/Erica/ipsc_DE_scripts/LRRK2_iMGL_meta_ipsc.tsv")
+classification <- read_delim("/sc/arion/projects/als-omics/microglia_isoseq/isoseq-pipeline/results/stringtie2/filter2/raj_roussos_0922_stringtie_mix_filter_sqanti_classification.tsv.gz", 
+    "\t", escape_double = FALSE, trim_ws = TRUE)
+names(classification)[7] <- "ensembl"
+```
+
+Rename column names of counts matrix to match metadata
+```{r}
+colnames(tx_counts) <- meta$Sample_name
+```
+
+Break up GENCODE rowname annotations
+```{r}
+#pull out iso gene and transcript information from annotation file
+gene_id <- annotations$gene_id 
+transcript_id <- annotations$transcript_id
+df <- as.data.frame(gene_id) 
+df$transcript_id <- transcript_id
+```
+
+Split apart rownames and only pull transcript_id
+```{r message=FALSE, warning=FALSE}
+tx_counts <- tibble::rownames_to_column(tx_counts, "transcript_id")
+
+tx_counts <- separate(data = tx_counts, col = transcript_id, into = c("transcript_id", "gene_id", "havana_gene", "havana_transcript", "transcript_name", "gene_name", "x", "transcript_type"), sep = "\\|")
+tx_counts <- subset( tx_counts, select = -c(gene_id, havana_gene, havana_transcript, transcript_name, gene_name, x, transcript_type))
+```
+
+Sum up all transcripts per gene for DE analysis
+```{r}
+df_count <- left_join(tx_counts, df, by = "transcript_id") %>% dplyr::select(gene_id, everything()) %>% dplyr::select(-transcript_id)
+gene_counts <- df_count %>% group_by(gene_id) %>% summarise_all(sum)
+gene_counts <- column_to_rownames(gene_counts, var = "gene_id")
+```
+
+Index check, # columns of counts data == # rows of metadata
+```{r}
+meta <- subset(meta, select = c("Sample_name", "Picard_mqc_generalstats_picard_PCT_MRNA_BASES", "Treatment"))
+meta$Picard_mqc_generalstats_picard_PCT_MRNA_BASES <- as.integer(meta$Picard_mqc_generalstats_picard_PCT_MRNA_BASES)
+meta$Sample_name <- as.factor(meta$Sample_name)
+meta$Treatment <- as.factor(meta$Treatment)
+```
+
+Normalize and create DESeq object
+```{r message=FALSE, warning=FALSE}
+#createDeSEQ2 object for LPS
+dds <- DESeqDataSetFromMatrix(countData = round(gene_counts),
+                              colData = meta,
+                              design = ~ Picard_mqc_generalstats_picard_PCT_MRNA_BASES + Treatment) 
+#variable of interest at end of the formula
+
+#Make sure that control group is set as the reference group
+dds$Stimulation <- relevel(dds$Treatment, ref="basal")
+table(dds$Treatment) 
+```
+
+Filter by Median TPM > 0.1 and sum up all transcripts per gene
+```{r message=FALSE, warning=FALSE}
+tx_tpm <- tibble::rownames_to_column(tx_tpm, "transcript_id")
+tx_tpm <- separate(data = tx_tpm, col = transcript_id, into = c("transcript_id", "gene_id", "havana_gene", "havana_transcript", "transcript_name", "gene_name", "x", "transcript_type"), sep = "\\|")
+tx_tpm <- subset( tx_tpm, select = -c(gene_id, havana_gene, havana_transcript, transcript_name, gene_name, x, transcript_type))
+
+df_tpm <- left_join(tx_tpm, df, by = "transcript_id") %>% dplyr::select(gene_id, everything()) %>% dplyr::select(-transcript_id)
+gene_tpm <- df_tpm %>% group_by(gene_id) %>% summarise_all(sum)
+
+iso_genes <- gene_tpm$gene_id
+gene_tpm <- column_to_rownames(gene_tpm, var = "gene_id")
+
+median_gene_tpm <- enframe(rowMedians(as.matrix(gene_tpm)), name = "Gene", value = "median_tpm")
+median_gene_tpm <- cbind(median_gene_tpm, iso_genes)
+keep.exp <- dplyr::filter(median_gene_tpm, median_tpm > 0.1)
+keep.exp <- keep.exp$iso_genes
+
+filtered <- gene_counts[keep.exp,]
+dds = dds[keep.exp,]
+dds
+```
+
+Perform differential analysis
+```{r}
+dds <- DESeq(dds)
+resultsNames(dds)
+```
+
+Add gene names for ensembl IDs to df
+```{r}
+res_IFNg <- results(dds, name="Treatment_IFNg_vs_basal")
+DE_IFNG <- sum(res_IFNg$padj < 0.05, na.rm=TRUE)
+res_IFNg <- as.data.frame(res_IFNg)
+
+ens.str <- substr(rownames(res_IFNg), 1, 15)
+res_IFNg$symbol <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+res_IFNg$entrez <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_IFNg$name =   mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="GENENAME",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+
+
+resOrdered_IFNg <- res_IFNg[order(res_IFNg$pvalue),] 
+resOrdered_IFNg <- as.data.frame(resOrdered_IFNg)
+resOrdered_IFNg <- rownames_to_column(resOrdered_IFNg, var = "ensembl")
+res_IFNg$pvalue <- ifelse(res_IFNg$pvalue < 1e-100, -Inf, res_IFNg$pvalue)
+
+sig_res_IFNG <- filter(resOrdered_IFNg, padj < 0.05)
+#sig_res_IFNG <- rownames_to_column(FDR_filt, var = "ensembl")
+sig_res_IFNG_FC <- subset(sig_res_IFNG, log2FoldChange > 1 | log2FoldChange< -1)
+```
+
+Antisense gene naming
+```{r}
+AS_meta <- filter(resOrdered_IFNg, grepl("_AS", ensembl))
+
+AS_meta$gene_name <-
+  map_chr(str_split(AS_meta$ensembl, "\\_" ), ~{
+    split <- map_chr( str_split(.x, "_"), ~{
+      paste(gencode$gene_name[ match(.x, gencode$ensembl)], collapse = "_")
+    })
+    paste(split, collapse = "_")
+  })
+
+AS_meta$gene_name <- gsub(x = AS_meta$gene_name, pattern = "NA_", replacement = "novelGene_")  
+AS_meta$gene_name <- gsub(x = AS_meta$gene_name, pattern = "_NA", replacement = "_AS") 
+
+resOrdered_IFNg$gene_name <- AS_meta$gene_name[match(resOrdered_IFNg$ensembl, AS_meta$ensembl)]
+
+AS_meta$Category <- "Antisense"
+AS_meta$gene_name <- gsub(x = AS_meta$gene_name, pattern = "novelGene_", replacement = "")
+```
+
+Fusion gene naming
+```{r}
+fusion_meta <- filter(resOrdered_IFNg, grepl("\\+ENS|_ENS", ensembl))
+fusion_meta <- subset(fusion_meta, !fusion_meta$ensembl %in% AS_meta$ensembl) 
+  
+fusion_meta$gene_name <-
+  map_chr(str_split(fusion_meta$ensembl, "\\+" ), ~{
+    split <- map_chr( str_split(.x, "_"), ~{
+      paste(gencode$gene_name[ match(.x, gencode$ensembl)], collapse = "+")
+    })
+    paste(split, collapse = "+")
+  })
+  
+resOrdered_IFNg$gene_name <- fusion_meta$gene_name[match(resOrdered_IFNg$ensembl, fusion_meta$ensembl)]
+
+fusion_meta$Category <- "Fusion"
+```
+
+Novel gene naming
+```{r}
+novel_meta <- filter(resOrdered_IFNg, grepl("novelGene_", ensembl))
+novel_meta <- subset(novel_meta, !novel_meta$ensembl %in% AS_meta$ensembl) 
+novel_meta <- novel_meta[,-11]
+novel_annotations <- annotations[annotations$gene_id %in% novel_meta$ensembl,]
+names(novel_annotations)[5] <- "ensembl"
+novel_annotations <- novel_annotations[,5:6]
+novel_meta <- inner_join(novel_meta, novel_annotations, by = "ensembl")
+novel_meta$Category <- "Novel"
+novel_meta$gene_name <- gsub(x = novel_meta$gene_name, pattern = "e_.*_", replacement = "e_") 
+```
+
+Add annotated gene names
+```{r}
+x <- rbind(AS_meta, fusion_meta, novel_meta)
+annotated <- subset(resOrdered_IFNg, !resOrdered_IFNg$ensembl %in% x$ensembl) 
+annotated <- annotated[,-11]
+annotated <- left_join(annotated, gencode, by = "ensembl")
+annotated$Category <- "Annotated"
+```
+
+FUll df
+```{r}
+resOrdered_IFNg <- rbind(annotated, x)
+resOrdered_IFNg <- resOrdered_IFNg[,-8]
+```
+
+Add gene regulation column to df
+```{r}
+resOrdered_IFNg <- resOrdered_IFNg %>%
+  mutate(gene_type = case_when(log2FoldChange >= 1 & padj <= 0.05 ~ "up",
+                               log2FoldChange <= 1 & padj <= 0.05 ~ "down",
+                               TRUE ~ "ns"))   
+
+table(resOrdered_IFNg$gene_type)
+#resOrdered_IFNg <- rownames_to_column(resOrdered_IFNg, var = "ensembl")
+```
+
+
+Break down novel genes by category
+```{r}
+novel_IFNG_FC <- unique(x)
+novel_IFNG_FC <- filter(novel_IFNG_FC, padj < 0.05)
+novel_IFNG_FC <- subset(novel_IFNG_FC, log2FoldChange > 1 | log2FoldChange< -1)
+```
+
+Pull out adjpvals and logFC for novel genes
+```{r}
+ils <- as.array(rownames(gene_counts))
+
+
+il_genes <- novel_IFNG_FC %>%
+  filter(ensembl %in% ils) 
+il_genes <- replace(il_genes, il_genes$pvalue< 1e-100, Inf) 
+
+
+
+sorted_il_genes <- il_genes %>% as.data.frame() %>% 
+  arrange((padj))
+
+
+#pick labels for plot
+sorted_il_genes <- sorted_il_genes[1:7,]
+sorted_il_genes <- sorted_il_genes[-6,]
+```
+
+Df for only novel genes
+```{r message=FALSE, warning=FALSE}
+novel_il_genes <- subset(il_genes, Category == c("Novel", "Fusion", "Antisense"))
+novel_il_genes <- novel_il_genes %>% as.data.frame() %>% 
+  arrange((padj))
+names(novel_il_genes)[1] <- "symbol"
+names(novel_il_genes)[8] <- "ensembl"
+novel_il_genes <- novel_il_genes[c("ensembl", "baseMean", "log2FoldChange", "lfcSE",
+                "stat", "pvalue", "padj", "symbol", "entrez", "name","Category")]
+```
+
+Add gene regulation for novel genes 
+```{r}
+il_genes <- il_genes %>%
+  mutate(gene_type = case_when(log2FoldChange >= 1 & padj <= 0.05 ~ "up",
+                               log2FoldChange <= 1 & padj <= 0.05 ~ "down",
+                               TRUE ~ "ns"))   
+
+table(il_genes$gene_type)
+```
+
+Jack's ggplot theme for paper
+```{r}
+theme_jh <- function () { 
+    theme_bw(base_size=5, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 7)
+        )
+}
+```
+
+```{r}
+table(il_genes$Category, il_genes$gene_type)
+```
+
+IFNg DEGs plot
+
+            down up
+  Antisense    2  6
+  Fusion      14 33
+  Novel        6 14
+```{r}
+#options(ggrepel.max.overlaps = 100)
+# Add subplot layer to the main volcano plot -----------------------------------
+p1 <-  ggplot(data = resOrdered_IFNg, # Original data  
+       aes(x = log2FoldChange, y = -log10(pvalue))) + 
+  #geom_point(aes(colour = class ), size = 0.5) +
+  geom_point(colour = "grey", alpha = 0.5, size = 0.5) +
+  geom_point(data = il_genes, aes(col = Category),
+             size = 0.5) + 
+  scale_color_manual(values = c("#5E3C99", "#21908CFF", "darkorange2")) +
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") + 
+  geom_vline(xintercept = c(log2(0.5), log2(2)),
+             linetype = "dashed") + ggtitle("IFNg DEGs")  + geom_text_repel(data = sorted_il_genes, aes(
+      label = gene_name), fontface = "italic", size = 5*5/14, min.segment.length = 0) + xlim(-7,7) + 
+    annotate("text", x =c(-5, -4, -3), y = 266, label = c("2","14","6"), colour = c("#5E3C99", "#21908CFF", "darkorange2"), size = 2)+ 
+    annotate("text", x =c(3, 4, 5), y = 266, label = c("6","33","14"), colour = c("#5E3C99", "#21908CFF", "darkorange2"), size = 2) +
+    annotate("text", x =c(-4, 4), y = 285, label = c("down", "up"), size = 2)  + theme_jh() + theme(legend.position = "top", legend.spacing.x  =  unit(0.01, 'cm'))  + ylab("-log10(pvalue)")
+
+p1
+```
+
+
+
+Save plot
+```{r}
+#ggsave(plot = p1, filename = "/sc/arion/projects/als-omics/microglia_isoseq/Erica/figure_scripts/plots/ifng_degs_labels2.pdf", width = 60, height = 60, units = "mm")
+```
+
+
+```{r}
+#DTU_IFNg_paper <- subset(resOrdered_IFNg, select = c("ensembl", "log2FoldChange", "pvalue", "padj",  "gene_name", "Category"))
+#write_tsv(DTU_IFNg_paper, "/sc/arion/projects/als-omics/microglia_isoseq/Erica/figure_scripts/ipsc_IFNg_DEGs.tsv")
+```
