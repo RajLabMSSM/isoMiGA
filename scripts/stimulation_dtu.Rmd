@@ -1,0 +1,422 @@
+---
+title: "iPSC DTU"
+output: html_notebook
+---
+
+
+```{r message=FALSE, warning=FALSE}
+library(satuRn)
+library(readr)
+library(dplyr)
+library(rtracklayer)
+library(edgeR)
+library(SummarizedExperiment)
+library(purrr)
+library(ggplot2)
+library(textshape)
+library(tibble)
+library(matrixStats)
+library(tidyr)
+library(tidyverse)
+library(data.table)
+library(magrittr)
+library(ggtranscript)
+library(ggrastr)
+```
+
+Load data
+```{r message=FALSE, warning=FALSE}
+load("/Users/ericabrophy/Documents/ipsc_results_combined_salmon_counts.RData")
+meta <- read_delim("Documents/microglia_isoseq_sample_metadata.tsv", 
+     delim = "\t", escape_double = FALSE, 
+     trim_ws = TRUE)
+
+annotations <- read_table2("/Users/ericabrophy/Documents/gencode_novel_transcript_pheno_meta.tsv")
+annotations <- as.data.frame(annotations)
+annotations <- subset(annotations, select = c("feature", "group"))
+colnames(annotations) <- c("isoform_id", "gene_id")
+```
+
+```{r}
+#load("/Users/ericabrophy/Documents/DTU_data.RData")
+```
+
+GENCODE  annotations
+```{r}
+gencode <- rtracklayer::import("/Users/ericabrophy/Documents/gencode.v38.primary_assembly.annotation.gtf")
+gencode <- as.data.frame(gencode)
+gencode <- subset(gencode, select = c('gene_id', 'gene_name'))
+gencode <- unique(gencode)
+colnames(gencode) <- c("gene_id", "gene_name")
+```
+
+```{r}
+stringtie_gtf <- rtracklayer::import("/Users/ericabrophy/Documents/raj_roussos_0922_stringtie_mix_combined.sorted.gtf.gz")
+```
+
+```{r}
+gene_id <- annotations$gene_id 
+transcript_id <- annotations$isoform_id
+df <- as.data.frame(gene_id) 
+df <- as.data.frame(transcript_id)
+df$transcript_id <- transcript_id
+#df$gene_id <- gene_id
+df <- distinct(df)
+df <- remove_missing(df, na.rm = TRUE)
+```
+
+
+```{r}
+tx_counts <- tibble::rownames_to_column(tx_counts, "transcript_id")
+
+tx_counts <- separate(data = tx_counts, col = transcript_id, into = c("transcript_id", "gene_id", "havana_gene", "havana_transcript", "transcript_name", "gene_name", "x", "transcript_type"), sep = "\\|")
+tx_counts <- subset( tx_counts, select = -c(gene_id, havana_gene, havana_transcript, transcript_name, gene_name, x, transcript_type))
+
+#df_count <- left_join(tx_counts, annotations, by = "transcript_id") %>% dplyr::select(gene_id, everything()) %>% dplyr::select(-transcript_id)
+#gene_counts <- df_count %>% group_by(gene_id) %>% summarise_all(sum)
+```
+
+
+
+
+```{r}
+tx_counts <- column_to_rownames(tx_counts, var = "transcript_id")
+tx_counts <- tx_counts[,2:10,drop = FALSE]
+meta <- meta[2:10,]
+```
+
+```{r}
+txInfo <- annotations %>% dplyr::select(-gene_id) 
+txInfo <- as.data.frame(unique(annotations))
+tx_counts <- tx_counts[which(
+  rownames(tx_counts) %in% txInfo$isoform_id),]
+```
+
+```{r}
+filter_edgeR <- filterByExpr(tx_counts,
+    design = NULL,
+    group = meta$Treatment,
+    lib.size = NULL,
+    min.count = 150, 
+    min.prop = 0.7)
+# more stringent than default to reduce run time of the vignette
+
+#try with median tpm filtering 
+
+table(filter_edgeR)
+tx_counts <- tx_counts[filter_edgeR, ]
+```
+```{r}
+# df_tpm <- left_join(tx_tpm, df, by = "transcript_id") %>% dplyr::select(gene_id, everything()) %>% dplyr::select(-transcript_id)
+# gene_tpm <- df_tpm %>% group_by(gene_id) %>% summarise_all(sum)
+# 
+# 
+# iso_genes <- gene_tpm$gene_id
+# gene_tpm <- column_to_rownames(gene_tpm, var = "gene_id")
+# 
+# #gene_tpm <- gene_tpm %>% remove_rownames %>% column_to_rownames(var="Gene")
+# median_gene_tpm <- enframe(rowMedians(as.matrix(gene_tpm)), name = "Gene", value = "median_tpm")
+# median_gene_tpm <- cbind(median_gene_tpm, iso_genes)
+# keep.exp <- dplyr::filter(median_gene_tpm, median_tpm > 0.1)
+# keep.exp <- keep.exp$iso_genes
+# #keep.exp =  rowSums(cpm(gene_tpm) > 1) >= 0.5*ncol(gene_tpm)
+# tx_counts <- tx_counts[keep.exp, ]
+```
+
+```{r}
+# Update txInfo according to the filtering procedure
+txInfo <- txInfo[which(
+  txInfo$isoform_id %in% rownames(tx_counts)), ]
+
+# remove txs that are the only isoform expressed within a gene (after filtering)
+txInfo <- subset(txInfo, 
+                 duplicated(gene_id) | duplicated(gene_id, fromLast = TRUE))
+tx_counts<- tx_counts[which(rownames(
+  tx_counts) %in% txInfo$isoform_id), ]
+
+# satuRn requires the transcripts in the rowData and 
+# the transcripts in the count matrix to be in the same order.
+txInfo <- txInfo[match(rownames(tx_counts), txInfo$isoform_id), ]
+```
+
+
+```{r}
+colnames(tx_counts) <- meta$Sample_name
+```
+
+```{r}
+meta$group <- as.factor(paste(meta$Cell_line, meta$Treatment, sep = "."))
+```
+
+```{r}
+txInfo <- txInfo[txInfo$isoform_id %in% rownames(tx_counts),]
+## Generate SummarizedExperiment
+sumExp <- SummarizedExperiment::SummarizedExperiment(
+  assays = list(counts = tx_counts),
+  colData = meta,
+  rowData = txInfo)
+```
+
+```{r}
+metadata(sumExp)$formula <- ~ 0 + as.factor(colData(sumExp)$group) + sumExp$Picard_mqc_generalstats_picard_PCT_MRNA_BASES
+```
+
+```{r}
+# tx_ratio <- 
+#   map_df(unique(txInfo$gene_id),  ~{
+#     df <- tx_counts[ txInfo$gene_id == .x,]
+#     ratios <- sweep(df, MARGIN = 2, STATS =  colSums(df), FUN = "/")
+#     return(ratios)
+#   })
+# length(unique(txInfo$gene_id))
+# length(unique(txInfo$isoform_id))
+```
+
+```{r}
+# fit model - takes a few minutes
+system.time({
+  sumExp <- satuRn::fitDTU(
+    object = sumExp,
+    formula = ~ 0 + sumExp$group + sumExp$Picard_mqc_generalstats_picard_PCT_MRNA_BASES,
+    parallel = FALSE,
+    BPPARAM = BiocParallel::bpparam(),
+    verbose = TRUE
+  )
+})
+```
+
+```{r}
+design <- model.matrix(~ 0 + sumExp$group + sumExp$Picard_mqc_generalstats_picard_PCT_MRNA_BASES) # constructs design matrix
+colnames(design) <- c(levels(sumExp$group), "pct_mRNA_bases")
+L <- limma::makeContrasts(Contrast1 = A9.basal - A9.IFNg,
+                          Contrast2 = A9.basal - A9.LPS, 
+                          levels = design) # constructs contrast matrix
+```
+
+```{r}
+sumExp <- satuRn::testDTU(
+  object = sumExp,
+  contrasts = L,
+  sort = TRUE
+)
+```
+
+```{r}
+DTU_IFNg <- rowData(sumExp)[["fitDTUResult_Contrast1"]]
+DTU_LPS <- rowData(sumExp)[["fitDTUResult_Contrast2"]]
+```
+
+
+```{r}
+#DTU_IFNg <- tibble::rownames_to_column(DTU_IFNg, var = "transcript_id")
+#DTU_LPS <- tibble::rownames_to_column(DTU_LPS, var = "transcript_id")
+```
+
+
+```{r}
+classification <- read_delim("/Users/ericabrophy/Documents/raj_roussos_0922_stringtie_mix_filter_sqanti_classification.tsv.gz", 
+    "\t", escape_double = FALSE, trim_ws = TRUE)
+names(classification)[7] <- "ensembl"
+```
+
+```{r}
+classification_subset <- subset(classification, select = c("isoform", "structural_category", "coding", "predicted_NMD"))
+DTU_IFNg['Category'] <- NA
+DTU_IFNg <- DTU_IFNg %>% rownames_to_column(var = "isoform")
+DTU_IFNg <- DTU_IFNg %>% 
+  mutate(Category = if_else(str_detect(isoform, "MS*"), "Novel", "Annotated"))
+
+```
+
+Add gene regulation for novel genes 
+```{r}
+DTU_IFNg <- DTU_IFNg %>%
+  mutate(gene_type = case_when(estimates > 0 & regular_FDR <= 0.05 ~ "up",
+                               estimates < 0 & regular_FDR <= 0.05 ~ "down",
+                               TRUE ~ "ns"))
+
+table(DTU_IFNg$Category, DTU_IFNg$gene_type)
+
+```
+add ensembl id to DTU df 
+```{r}
+colnames(annotations)[1] <- "isoform"
+DTU_IFNg <- inner_join(DTU_IFNg, annotations, by = "isoform")
+colnames(DTU_IFNg)[12] <- "ensembl"
+```
+
+
+add gene name
+```{r}
+colnames(gencode)[1] <- "ensembl"
+DTU_IFNg <- left_join(DTU_IFNg, gencode, by = "ensembl")
+```
+
+Antisense gene naming
+```{r}
+AS_meta <- filter(DTU_IFNg, grepl("_AS", ensembl))
+
+AS_meta$gene_name <-
+  map_chr(str_split(AS_meta$ensembl, "\\_" ), ~{
+    split <- map_chr( str_split(.x, "_"), ~{
+      paste(gencode$gene_name[ match(.x, gencode$ensembl)], collapse = "_")
+    })
+    paste(split, collapse = "_")
+  })
+
+AS_meta$gene_name <- gsub(x = AS_meta$gene_name, pattern = "NA_", replacement = "novelGene_")  
+AS_meta$gene_name <- gsub(x = AS_meta$gene_name, pattern = "_NA", replacement = "_AS") 
+
+#DTU$gene_name <- AS_meta$gene_name[match(DTU$ensembl, AS_meta$ensembl)]
+
+#AS_meta$Category <- "Antisense"
+AS_meta$gene_name <- gsub(x = AS_meta$gene_name, pattern = "novelGene_", replacement = "")
+DTU_IFNg <- subset(DTU_IFNg, !DTU_IFNg$ensembl %in% AS_meta$ensembl) 
+```
+
+Fusion gene naming
+```{r}
+fusion_meta <- filter(DTU_IFNg, grepl("\\+ENS|_ENS", ensembl))
+fusion_meta <- subset(fusion_meta, !fusion_meta$ensembl %in% AS_meta$ensembl) 
+
+fusion_meta$gene_name <-
+  map_chr(str_split(fusion_meta$ensembl, "\\+" ), ~{
+    split <- map_chr( str_split(.x, "_"), ~{
+      paste(gencode$gene_name[ match(.x, gencode$ensembl)], collapse = "+")
+    })
+    paste(split, collapse = "+")
+  })
+  
+#fusion_meta$Category <- "Fusion"
+#DTU$gene_name <- fusion_meta$gene_name[match(DTU$ensembl, fusion_meta$ensembl)]
+DTU_IFNg <- subset(DTU_IFNg, !DTU_IFNg$ensembl %in% fusion_meta$ensembl) 
+```
+
+```{r}
+DTU_IFNg <- rbind(DTU_IFNg, fusion_meta, AS_meta)
+```
+
+```{r}
+DTU_IFNg_sig <- filter(DTU_IFNg, regular_FDR < 0.05)
+DTU_LPS_sig <- filter(DTU_LPS, regular_FDR < 0.05)
+```
+
+```{r}
+#DTU_IFNg_sig <- rownames_to_column(DTU_IFNg_sig, var = "transcript_id")
+#write_tsv(DTU_IFNg_sig, "/Users/ericabrophy/Documents/DTU_IFNg_combinedref.tsv")
+```
+
+```{r}
+colnames(annotations) <- c("transcript_id", "ensembl")
+annotations <- unique(na.omit(annotations))
+#annotations <- na.omit(annotations)
+```
+
+
+
+```{r}
+# DE_iso_IFNg <- read_csv("/Users/ericabrophy/Documents/DE_iso_IFNg.csv")
+# DE_iso_IFNg_sig <- filter(DE_iso_IFNg, padj < 0.10)
+# ```
+# 
+# DE is by gene, DTU 
+# ```{r}
+# DTU_IFNg_sig <- inner_join(annotations, DTU_IFNg_sig, by = "transcript_id")
+# merged <- intersect(DTU_IFNg_sig$ensembl, DE_iso_IFNg_sig$ensembl)
+```
+
+
+```{r}
+ils <- as.array(rownames(tx_counts))
+
+#resOrdered_LPS <- rownames_to_column(resOrdered_LPS, var = "ensembl")
+DTU_IFNg_FC <- subset(DTU_IFNg, estimates > 0 | estimates < 0)
+
+il_genes <- DTU_IFNg %>%
+  filter(isoform %in% ils) 
+
+sorted_il_genes <- il_genes %>% as.data.frame() %>% 
+  arrange((regular_FDR))
+sorted_il_genes <- sorted_il_genes[1:35,]
+```
+
+```{r}
+# library(ggrepel)
+# 
+# ggplot(data = il_genes, # Original data  
+#        aes(x = (estimates), y = -log10(pval))) + 
+#   #geom_point(aes(colour = class ), size = 0.5) +
+#   #geom_point(colour = "grey", alpha = 0.5) +
+#   geom_point(data = DTU_IFNg_sig, aes(col = as.factor(Category)),
+#              size = 2) +
+#   geom_hline(yintercept = -log10(0.05),
+#              linetype = "dashed") + 
+#   #geom_point(colour = "grey", alpha = 0.5) +
+#   geom_vline(xintercept = c(log2(0.8), log2(1.25)),
+#              linetype = "dashed") + ggtitle("iPSC differential usage of transcripts: IFNg vs baseline")   + theme_classic() +
+#   coord_cartesian(clip = "off") + scale_x_continuous(limits = c(-5,5))   + xlab("estimated log-odds ratios") + labs(color = "Category")
+```
+
+```{r}
+sorted_il_genes <- il_genes %>% as.data.frame() %>% 
+  arrange((regular_FDR))
+sorted_il_genes <- subset(il_genes, Category == "Novel")
+sorted_il_genes <- sorted_il_genes[1:2,]
+```
+
+```{r}
+#library(gghighlight)
+#p +  gghighlight::gghighlight(-log10(pval) > 1.3) 
+```
+
+Jack's ggplot theme for paper
+```{r}
+theme_jh <- function () { 
+    theme_bw(base_size=5, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 7)
+        )
+}
+```
+
+```{r}
+table(DTU_IFNg_sig$Category, DTU_IFNg_sig$gene_type)
+```
+
+      
+            down    ns    up
+Annotated    19 13145    23
+Novel         3  4580     6
+```{r}
+p <- ggplot(data = DTU_IFNg, # Original data  
+       aes(x = estimates, y = -log10(pval))) + 
+  #geom_point(aes(colour = class ), size = 0.5) +
+  rasterize(geom_point(colour = "grey", alpha = 0.5, size = 0.5), dpi = 600) +
+  rasterize(geom_point(data = DTU_IFNg_sig, aes(col = Category), size = 0.5), dpi = 600) + ggtitle("IFNg DTU") + theme_jh()  +
+  scale_color_manual(values = c("dodgerblue2", "firebrick2")) +
+  geom_hline(yintercept = 3.8,
+             linetype = "dashed") + 
+  #geom_point(colour = "grey", alpha = 0.5) +
+  #geom_vline(xintercept = c(log2(0.9), log2(1.15))) + 
+  xlim(-5.5,5.5) + ylim(0,7.5) + 
+    annotate("text", x =c(-4, -3), y =7, label = c("19","3"), colour =  c("dodgerblue2", "firebrick2"), size = 2)+ 
+    annotate("text", x =c(3, 4), y = 7, label = c("23","6"), colour =  c("dodgerblue2", "firebrick2"), size = 2) +
+    annotate("text", x =c(-3.5, 3.5), y = 7.5, label = c("down", "up"), size = 2) + theme(legend.position = "top")  + ylab("-log10(pvalue)")
+
+p
+```
+
+```{r}
+#ggsave(plot = p, filename = "/Users/ericabrophy/Documents/plots/ipsc_DTU_reg_5.pdf", width = 60, height = 60, units = "mm")
+```

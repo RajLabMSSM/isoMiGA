@@ -1,0 +1,715 @@
+---
+title: "SVZ DEGs"
+output: html_notebook
+---
+
+
+```{r message=FALSE, warning=FALSE}
+library(satuRn)
+library(readr)
+library(dplyr)
+library(rtracklayer)
+library(edgeR)
+library(SummarizedExperiment)
+library(purrr)
+library(ggplot2)
+library(textshape)
+library(tibble)
+library(matrixStats)
+library(tidyr)
+library(tidyverse)
+library(data.table)
+library(ggtranscript)
+library(patchwork)
+library(ggrastr)
+library(extrafont)
+library(extrafontdb)
+library(systemfonts)
+library(patchwork)
+```
+
+```{r}
+#load("~/DTU_svz.RData")
+```
+
+Load data
+```{r}
+load("/Users/ericabrophy/Documents/raj_results_combined_salmon_counts.RData")
+raj_tpm <- tx_tpm
+raj_counts <- tx_counts
+
+load("/Users/ericabrophy/Documents/raj2_results_combined_salmon_counts.RData")
+raj2_tpm <- tx_tpm
+raj2_counts <- tx_counts
+
+tx_tpm <- cbind(raj_tpm, raj2_tpm)
+tx_counts <- cbind(raj_counts, raj2_counts)
+
+annotations <- read_table2("/Users/ericabrophy/Documents/gencode_novel_transcript_pheno_meta.tsv")
+annotations <- as.data.frame(annotations)
+annotations <- subset(annotations, select = c("feature", "group"))
+colnames(annotations) <- c("isoform_id", "gene_id")
+
+metadata <- read_tsv("/Users/ericabrophy/Documents/raj_microglia_metadata_255_qc_pass.tsv")
+
+stringtie_gtf <- rtracklayer::import("/Users/ericabrophy/Documents/raj_roussos_0922_stringtie_mix_combined.sorted.gtf.gz")
+
+classification <- read_delim("/Users/ericabrophy/Documents/raj_roussos_0922_stringtie_mix_filter_sqanti_classification.tsv.gz", 
+    "\t", escape_double = FALSE, trim_ws = TRUE)
+names(classification)[7] <- "ensembl"
+```
+
+GENCODE  annotations
+```{r}
+gencode <- rtracklayer::import("/Users/ericabrophy/Documents/gencode.v38.primary_assembly.annotation.gtf")
+gencode <- as.data.frame(gencode)
+gencode <- subset(gencode, select = c('gene_id', 'gene_name'))
+gencode <- unique(gencode)
+colnames(gencode) <- c("gene_id", "gene_name")
+```
+
+Create metadata with sample ID and brain region (split by second -)
+```{r}
+meta <- as.data.frame(colnames(tx_tpm))
+names(meta) <- "sample_ID"
+meta$region = as.character(lapply(strsplit(as.character(meta$sample_ID), split="-"),
+                        tail, n=1))
+```
+
+Pull out selected regions: MFG, SVZ, THA, STG
+```{r}
+meta <- filter(meta, region == "SVZ" | region == "GFM" | region == "THA" | region =="GTS" | region == "MGF")
+```
+
+Filter by SVZ region
+```{r}
+meta$group<-ifelse(meta$region == "SVZ","SVZ","Other")
+table(meta$group)
+```
+
+Subset metadata by desired samples
+```{r}
+names(metadata)[1] <- "sample_ID"
+x <- metadata[!metadata$sample_ID %in% meta$sample_ID,]
+metadata_selected <- inner_join(meta, metadata, by = "sample_ID")
+metadata_selected$batch_number <- "batch1"
+metadata_selected <- subset(metadata_selected, select = c("sample_ID", "donor_id", "sex", "age", "region","batch_number", "cause_of_death_categories", "picard_pct_mrna_bases", "picard_summed_median",  "picard_pct_ribosomal_bases"))
+
+```
+
+Add in the stimulated metadata - 122 samples
+```{r message=FALSE, warning=FALSE}
+stimulated_metadata <- read.table("/Users/ericabrophy/Documents/raj_stimulated_metadata.txt", header = TRUE)
+stimulated_metadata <- stimulated_metadata %>% remove_rownames()
+stimulated_metadata$Sample[484] <- "MG-01-SVZ-RNA"
+#stimulated_metadata$Sample[488] <- "MG-03-SVZ-RNA"
+stimulated_metadata$batch_number <- "batch2"
+```
+
+Metadata - katia 255 miga
+metadata_stimulated <- stimulated samples 8 
+
+```{r}
+stimulated_metadata$sample_ID <- gsub('-RNA','',stimulated_metadata$Sample)
+stimulated_metadata <- stimulated_metadata[stimulated_metadata$sample_ID %in% meta$sample_ID,]
+stimulated_metadata <- inner_join(meta, stimulated_metadata, by = "sample_ID")
+
+stimulated_metadata <- subset(stimulated_metadata, select = c("sample_ID", "Donor_id","sex",  "age", "region", "batch_number", "Cause_of_death_categories", "picard_pct_mrna_bases", "picard_summed_median",  "picard_pct_ribosomal_bases"))
+
+names(stimulated_metadata)[2] <- "donor_id"
+names(stimulated_metadata)[7] <- "cause_of_death_categories"
+
+
+metadata_all <- rbind(metadata_selected, stimulated_metadata)
+```
+
+```{r}
+metadata_all$group<-ifelse(metadata_all$region == "SVZ","SVZ","Other")
+table(metadata_all$group)
+metadata_all$group <- as.factor(metadata_all$group)
+```
+
+```{r}
+#load("/Users/ericabrophy/Documents/DTU_data.RData")
+```
+
+
+```{r}
+gene_id <- annotations$gene_id 
+transcript_id <- annotations$isoform_id
+df <- as.data.frame(gene_id) 
+df <- as.data.frame(transcript_id)
+df$transcript_id <- transcript_id
+df <- distinct(df)
+df <- remove_missing(df, na.rm = TRUE)
+```
+
+
+```{r}
+tx_counts <- tibble::rownames_to_column(tx_counts, "transcript_id")
+
+tx_counts <- separate(data = tx_counts, col = transcript_id, into = c("transcript_id", "gene_id", "havana_gene", "havana_transcript", "transcript_name", "gene_name", "x", "transcript_type"), sep = "\\|")
+tx_counts <- subset( tx_counts, select = -c(gene_id, havana_gene, havana_transcript, transcript_name, gene_name, x, transcript_type))
+
+#names(annotations)[1] <- "transcript_id"
+##df_count <- left_join(tx_counts, annotations, by = "transcript_id") %>% dplyr::select(gene_id, everything()) %>% dplyr::select(-transcript_id)
+#gene_counts <- df_count %>% group_by(gene_id) %>% summarise_all(sum)
+#gene_counts_names <- gene_counts$gene_id 
+
+#median_gene_counts <- enframe(rowMedians(as.matrix(gene_counts)), name = "Gene", value = "median_counts")
+#median_gene_counts <- cbind(median_gene_tpm, gene_counts_names)
+```
+
+
+
+```{r}
+tx_counts <- column_to_rownames(tx_counts, var = "transcript_id")
+tx_counts <- tx_counts[,colnames(tx_counts) %in% metadata_all$sample_ID]
+```
+
+```{r}
+txInfo <- annotations %>% dplyr::select(-gene_id) 
+txInfo <- as.data.frame(unique(annotations))
+tx_counts <- tx_counts[which(
+  rownames(tx_counts) %in% txInfo$isoform_id),]
+```
+
+```{r}
+filter_edgeR <- filterByExpr(tx_counts,
+    design = NULL,
+    group = metadata_all$group,
+    lib.size = NULL,
+    min.count = 150, 
+    min.prop = 0.7)
+# more stringent than default to reduce run time of the vignette
+
+#try with median tpm filtering 
+
+table(filter_edgeR)
+tx_counts <- tx_counts[filter_edgeR, ]
+```
+
+
+```{r}
+# Update txInfo according to the filtering procedure
+txInfo <- txInfo[which(
+  txInfo$isoform_id %in% rownames(tx_counts)), ]
+
+# remove txs that are the only isoform expressed within a gene (after filtering)
+txInfo <- subset(txInfo, 
+                 duplicated(gene_id) | duplicated(gene_id, fromLast = TRUE))
+tx_counts<- tx_counts[which(rownames(
+  tx_counts) %in% txInfo$isoform_id), ]
+
+# satuRn requires the transcripts in the rowData and 
+# the transcripts in the count matrix to be in the same order.
+txInfo <- txInfo[match(rownames(tx_counts), txInfo$isoform_id), ]
+```
+
+
+```{r}
+colnames(tx_counts) <- metadata_all$sample_ID
+```
+
+```{r}
+#meta$group <- as.factor(paste(meta$region, meta$group, sep = "."))
+```
+
+```{r}
+txInfo <- txInfo[txInfo$isoform_id %in% rownames(tx_counts),]
+## Generate SummarizedExperiment
+sumExp <- SummarizedExperiment::SummarizedExperiment(
+  assays = list(counts = tx_counts),
+  colData = metadata_all,
+  rowData = txInfo)
+```
+
+```{r}
+metadata(sumExp)$formula <- ~ 0 + colData(sumExp)$group +  as.factor(sumExp$sex)   + sumExp$age + sumExp$picard_pct_mrna_bases + sumExp$picard_summed_median + sumExp$picard_pct_ribosomal_bases +  as.factor(sumExp$batch_number) 
+```
+
+
+
+```{r}
+# tx_ratio <- 
+#   map_df(unique(txInfo$gene_id),  ~{
+#     df <- tx_counts[ txInfo$gene_id == .x,]
+#     ratios <- sweep(df, MARGIN = 2, STATS =  colSums(df), FUN = "/")
+#     return(ratios)
+#   })
+# length(unique(txInfo$gene_id))
+# length(unique(txInfo$isoform_id))
+```
+
+```{r}
+# fit model - takes a few minutes
+system.time({
+  sumExp <- satuRn::fitDTU(
+    object = sumExp,
+    formula = ~ 0 + sumExp$group + sumExp$sex + sumExp$age  + sumExp$picard_pct_mrna_bases + sumExp$picard_summed_median + sumExp$picard_pct_ribosomal_bases + sumExp$batch_number ,
+    parallel = FALSE,
+    BPPARAM = BiocParallel::bpparam(),
+    verbose = TRUE
+  )
+})
+
+ 
+```
+
+```{r}
+#group <- as.factor(metadata_all$group)
+#sex <- as.factor(metadata_all$sex)
+#donor_id <- as.cha(metadata_all$donor_id)
+#age <- as.numeric(metadata_all$age)
+#picard_pct_mrna_bases <- as.numeric(metadata_all$picard_pct_mrna_bases)
+#picard_summed_median <- as.numeric(metadata_all$picard_summed_median)
+#picard_pct_ribosomal_bases <- as.numeric(metadata_all$picard_pct_ribosomal_bases)
+#batch_number <- as.factor(metadata_all$batch_number)
+
+design <- model.matrix(~ 0 + sumExp$group + sumExp$sex  + sumExp$age  + sumExp$picard_pct_mrna_bases + sumExp$picard_summed_median + sumExp$picard_pct_ribosomal_bases + sumExp$batch_number ) # construct design matrix
+colnames(design) <- c(levels(sumExp$group), "sex", "age", "picard_pct_mrna_bases", "picard_summed_median", "pct_ribosomal_bases", "batch_number")
+L <- limma::makeContrasts(Contrast = SVZ - Other,
+                          levels = design) # constructs contrast matrix
+```
+
+```{r}
+sumExp <- satuRn::testDTU(
+  object = sumExp,
+  contrasts = L,
+  sort = TRUE
+)
+```
+
+```{r}
+DTU <- rowData(sumExp)[["fitDTUResult_Contrast"]]
+DTU <- rownames_to_column(DTU, var = "isoform")
+DTU <- DTU %>% 
+  mutate(Category = if_else(str_detect(isoform, "MS*"), "Novel", "Annotated"))
+```
+
+Add gene regulation
+```{r}
+DTU <- DTU %>%
+  mutate(gene_type = case_when(estimates > 0 & regular_FDR <= 0.05 ~ "up",
+                               estimates < 0 & regular_FDR <= 0.05 ~ "down",
+                               TRUE ~ "ns"))
+
+table(DTU$Category, DTU$gene_type)
+
+```
+
+```{r}
+classification_subset <- subset(classification, select = c("isoform", "ensembl", "structural_category", "coding", "predicted_NMD"))
+DTU['Category'] <- NA
+#DTU <- DTU %>% rownames_to_column(var = "isoform")
+DTU <- DTU %>% 
+  mutate(Category = if_else(str_detect(isoform, "MS*"), "Novel", "Annotated"))
+```
+
+add ensembl id to DTU df 
+```{r}
+colnames(annotations)[1] <- "isoform"
+DTU <- inner_join(DTU, annotations, by = "isoform")
+colnames(DTU)[12] <- "ensembl"
+```
+
+
+add gene name
+```{r}
+colnames(gencode)[1] <- "ensembl"
+DTU <- left_join(DTU, gencode, by = "ensembl")
+```
+
+Antisense gene naming
+```{r}
+AS_meta <- filter(DTU, grepl("_AS", ensembl))
+
+AS_meta$gene_name <-
+  map_chr(str_split(AS_meta$ensembl, "\\_" ), ~{
+    split <- map_chr( str_split(.x, "_"), ~{
+      paste(gencode$gene_name[ match(.x, gencode$ensembl)], collapse = "_")
+    })
+    paste(split, collapse = "_")
+  })
+
+AS_meta$gene_name <- gsub(x = AS_meta$gene_name, pattern = "NA_", replacement = "novelGene_")  
+AS_meta$gene_name <- gsub(x = AS_meta$gene_name, pattern = "_NA", replacement = "_AS") 
+
+#DTU$gene_name <- AS_meta$gene_name[match(DTU$ensembl, AS_meta$ensembl)]
+
+#AS_meta$Category <- "Antisense"
+AS_meta$gene_name <- gsub(x = AS_meta$gene_name, pattern = "novelGene_", replacement = "")
+DTU <- subset(DTU, !DTU$ensembl %in% AS_meta$ensembl) 
+```
+
+Fusion gene naming
+```{r}
+fusion_meta <- filter(DTU, grepl("\\+ENS|_ENS", ensembl))
+fusion_meta <- subset(fusion_meta, !fusion_meta$ensembl %in% AS_meta$ensembl) 
+
+fusion_meta$gene_name <-
+  map_chr(str_split(fusion_meta$ensembl, "\\+" ), ~{
+    split <- map_chr( str_split(.x, "_"), ~{
+      paste(gencode$gene_name[ match(.x, gencode$ensembl)], collapse = "+")
+    })
+    paste(split, collapse = "+")
+  })
+  
+#fusion_meta$Category <- "Fusion"
+#DTU$gene_name <- fusion_meta$gene_name[match(DTU$ensembl, fusion_meta$ensembl)]
+DTU <- subset(DTU, !DTU$ensembl %in% fusion_meta$ensembl) 
+```
+
+```{r}
+DTU <- rbind(DTU, fusion_meta, AS_meta)
+```
+
+```{r}
+DTU_sig <- filter(DTU, regular_FDR < 0.05)
+DTU_relaxed <- filter(DTU, regular_FDR < 0.10)
+```
+
+```{r}
+#DTU_sig <- rownames_to_column(DTU_sig, var = "transcript_id")
+#write_tsv(DTU_sig, "/Users/ericabrophy/Documents/DTU_microglia_combinedref.tsv")
+```
+
+```{r}
+colnames(annotations) <- c("transcript_id", "ensembl")
+annotations <- unique(na.omit(annotations))
+#annotations <- na.omit(annotations)
+```
+
+```{r}
+# DE_iso_IFNg <- read_csv("/Users/ericabrophy/Documents/DE_iso_IFNg.csv")
+# DE_iso_IFNg_sig <- filter(DE_iso_IFNg, padj < 0.10)
+# ```
+# 
+# DE is by gene, DTU 
+# ```{r}
+# DTU_sig <- inner_join(annotations, DTU_sig, by = "transcript_id")
+# merged <- intersect(DTU_sig$ensembl, DE_iso_IFNg_sig$ensembl)
+```
+
+Jack's ggplot theme for paper
+```{r}
+theme_jh <- function () { 
+    theme_bw(base_size=5, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 7)
+        )
+}
+```
+
+
+```{r}
+table(DTU_sig$Category, DTU_sig$gene_type)
+```
+
+Annotated     Novel 
+     3943      3125 
+     
+          down   ns   up
+Annotated 1567 6145 2376
+Novel     2143 4241  982
+```{r}
+p <- ggplot(data = DTU, # Original data  
+       aes(x = estimates, y = -log10(pval))) + 
+  #geom_point(aes(colour = class ), size = 0.5) +
+  rasterize(geom_point(colour = "grey", alpha = 0.5, size = 0.5), dpi = 600) +
+  rasterize(geom_point(data = DTU_sig, aes(col = Category),
+             size = 0.5), dpi = 600) + ggtitle("SVZ DTU")  + theme_jh() +
+  scale_color_manual(values = c("dodgerblue2", "firebrick2")) +
+  geom_hline(yintercept = 1.6,
+             linetype = "dashed") + 
+  #geom_point(colour = "grey", alpha = 0.5) +
+  #geom_vline(xintercept = c(log2(0.9), log2(1.15))) + 
+  xlim(-3.5,3.5)  + ylim(0,30) +
+    annotate("text", x =c(-3, -2), y =27, label = c("1,567","2,143"), colour = c("dodgerblue2", "firebrick2"), size = 2)+ 
+    annotate("text", x =c(2, 3), y = 27, label = c("2,376","982"), colour = c("dodgerblue2", "firebrick2"), size = 2) +
+    annotate("text", x =c(-2.5, 2.5), y = 29, label = c("down", "up"), size = 2) + theme(legend.position = "top") + ylab("-log10(pvalue)")
+
+p
+```
+
+```{r}
+ggsave(plot = p, filename = "/Users/ericabrophy/Documents/plots/svz_DTU_reg_updated.pdf", width = 60, height = 60, units = "mm")
+```
+
+
+
+```{r}
+stringtie_gtf <- as.data.frame(stringtie_gtf)
+stringtie_gtf <- stringtie_gtf %>% 
+  mutate(Category = if_else(str_detect(transcript_id, "MS*"), "Novel", "Annotated"))
+
+transcript_gtf <- filter(stringtie_gtf, gene_id =="ENSG00000073921.18") #PICALM
+
+#transcript_gtf <- filter(stringtie_gtf, gene_id =="ENSG00000182578.14") #CSF1R 
+
+#transcript_gtf <- filter(stringtie_gtf, gene_id =="ENSG00000146090.16") #RASGEF1C
+#transcript_gtf <- filter(stringtie_gtf, gene_id =="ENSG00000137642.13") #SORL1
+
+#transcript_gtf <- filter(stringtie_gtf, gene_id =="ENSG00000106366.9") #SERPRINE1
+
+#transcript_gtf <- filter(stringtie_gtf, gene_id =="ENSG00000110077.15")#MS4A6A 
+#ENSG00000169313.10 #P2RY12
+#ENSG00000073921.18#PICALM
+#transcript_gtf <- filter(stringtie_gtf, gene_id =="ENSG00000104043.15") #ATP8B4 
+#transcript_gtf <- filter(stringtie_gtf, gene_id =="ENSG00000137845.15") #ADAM10
+
+```
+
+```{r}
+#stringtie_gtf_loc <- subset(stringtie_gtf, type == "exon" | type == "CDS")
+transcript_gtf <- subset(transcript_gtf, type == "exon" | type == "CDS")
+```
+
+Merge transcripts that pass filter
+```{r}
+#DTU_filter <- as.data.frame(DTU$isoform)
+#names(DTU_filter) <- "transcript_id"
+#DTU_sig <- DTU_sig[,-1]
+#colnames(DTU_sig)[1] <- "transcript_id"
+
+
+transcript_gtf <- transcript_gtf[transcript_gtf$transcript_id %in% DTU_relaxed$isoform,]
+```
+
+Add coding category
+```{r}
+names(classification_subset)[1] <- "transcript_id"
+transcript_gtf <- left_join(transcript_gtf, classification_subset, by = "transcript_id")
+#stringtie_gtf_loc <- inner_join(stringtie_gtf_loc, classification_subset, by = "transcript_id")
+```
+
+Add gene regulation
+```{r}
+DTU_gene_reg <- subset(DTU_relaxed, select = c("isoform", "gene_type"))
+DTU_gene_reg <- DTU_gene_reg[DTU_gene_reg$isoform %in% transcript_gtf$transcript_id,]
+```
+
+
+```{r}
+# transcript_gtf %>%
+#     ggplot(aes(
+#         xstart = start,
+#         xend = end,
+#         y = transcript_id
+#     )) +
+#     geom_range(
+#         aes(fill = structural_category)) +
+#     geom_intron(
+#         data = to_intron(transcript_gtf, "transcript_id"),
+#         aes(strand = strand)
+#     )  + ggtitle("PICALM gene") +  theme_jh() + xlab("chr11") + ylab("Isoforms") + theme(legend.position = "bottom", legend.spacing.x  =  unit(0.01, 'cm'), axis.title.y=element_text(angle=0)) + 
+#   scale_fill_manual(values=c("#440154FF",  "#31688EFF", "#FDE725FF", "#35B779FF"))
+```
+
+```{r}
+names(annotations)[2] <- "gene_id"
+tx_tpm <- tibble::rownames_to_column(tx_tpm, "transcript_id")
+#
+tx_tpm <- separate(data = tx_tpm, col = transcript_id, into = c("transcript_id", "gene_id", "havana_gene", "havana_transcript", "transcript_name", "gene_name", "x", "transcript_type"), sep = "\\|")
+tx_tpm <- subset( tx_tpm, select = -c(gene_id, havana_gene, havana_transcript, transcript_name, gene_name, x, transcript_type))
+#
+#df_tpm <- left_join(tx_tpm, annotations, by = "transcript_id") %>% dplyr::select(gene_id, everything()) %>% dplyr::select(-transcript_id)
+#gene_tpm <- df_tpm %>% group_by(gene_id) %>% summarise_all(sum)
+
+
+tx_transcripts <- tx_tpm$transcript_id
+tx_tpm <- column_to_rownames(tx_tpm, var = "transcript_id")
+
+#gene_tpm <- gene_tpm %>% remove_rownames %>% column_to_rownames(var="Gene")
+median_tx_tpm <- enframe(rowMedians(as.matrix(tx_tpm)), name = "transcript_id", value = "median_tpm")
+median_tx_tpm <- cbind(median_tx_tpm, tx_transcripts)
+#keep.exp <- dplyr::filter(median_gene_tpm, median_tpm > 0.1)
+#keep.exp <- keep.exp$iso_genes
+#keep.exp =  rowSums(cpm(gene_tpm) > 1) >= 0.5*ncol(gene_tpm)
+#gene_tpm <- gene_tpm[keep.exp, ]
+```
+
+```{r}
+median_tx_tpm  <- median_tx_tpm [,-1]
+names(median_tx_tpm )[2] <- "transcript_id"
+names(annotations)[1] <- "transcript_id"
+anno_geneexp <- inner_join(median_tx_tpm , annotations, by = "transcript_id", multiple = "all")
+```
+
+```{r}
+anno_geneexp_all <- anno_geneexp[anno_geneexp$transcript_id %in% DTU$isoform,]
+names(anno_geneexp_all)[2] <- "isoform"
+DTU_tpm <- inner_join(DTU, anno_geneexp_all, by = "isoform")
+```
+
+```{r}
+anno_geneexp_sig <- anno_geneexp_all[anno_geneexp_all$isoform %in% DTU_relaxed$isoform,]
+DTU_sig_tpm <- inner_join(DTU_relaxed, anno_geneexp_sig, by = "isoform")
+DTU_sig_tpm <- DTU_sig_tpm[order(DTU_sig_tpm$regular_FDR, decreasing = TRUE), ] 
+```
+
+
+
+
+```{r}
+#colnames(gencode)[1] <- "gene_id"
+#DTU_sig_tpm <- merge(DTU_sig_tpm, gencode, by = "gene_id")
+#colnames(DTU_sig_tpm)[1] <- "transcript_id"
+#DTU_sig_tpm <- filter(DTU_sig_tpm, Category == "Novel")
+```
+
+```{r}
+
+# transcript_gtf <- mutate(transcript_gtf, fill_class = ifelse(coding == "coding", "Protein-coding", "NMD-sensitive"))
+transcript_gtf <- transcript_gtf %>% 
+   mutate(fill_class = ifelse( 
+                coding == "coding" &
+                predicted_NMD == "TRUE", 
+                          "NMD-sensitive", "Protien-coding"))
+transcript_gtf  <- transcript_gtf %>%
+    mutate(fill_class = ifelse(coding == "non_coding", "non_coding", fill_class))
+
+colnames(DTU_sig_tpm)[1] <- "transcript_id"
+DTU_sig_tpm_subset <- subset(DTU_sig_tpm, select = c("transcript_id", "median_tpm", "estimates", "se", "regular_FDR"))
+transcript_gtf <- unique(inner_join(transcript_gtf, DTU_sig_tpm_subset, by = "transcript_id"))
+```
+
+```{r}
+#stringtie_gtf <- stringtie_gtf %>% dplyr::filter(type == "exon")
+exons <- as.data.frame(filter(transcript_gtf, type == "exon"))
+cds <- as.data.frame(filter(transcript_gtf, type == "CDS"))
+```
+
+```{r}
+    exons %>% 
+    arrange(desc(median_tpm)) %>%
+    mutate( transcript_id = factor(transcript_id, levels = unique(rev(transcript_id)))) 
+```
+
+```{r}
+intron_data = to_intron(as.data.frame(transcript_gtf), "transcript_id") %>%
+    arrange((regular_FDR)) %>%
+    mutate( transcript_id = factor(transcript_id, levels = unique(rev(transcript_id)))) 
+```
+
+
+```{r}
+
+coords = NULL
+
+
+
+p <- 
+    exons %>% 
+    arrange((regular_FDR)) %>%
+    mutate( transcript_id = factor(transcript_id, levels = unique(rev(transcript_id)))) %>%
+      ggplot(aes_string(
+        xstart = "start",
+        xend = "end",
+        y = "transcript_id",
+        fill = "structural_category"
+    )) +
+
+    geom_intron(arrow.min.intron.length = 10000,
+        data = intron_data,
+        aes(strand = strand)) +
+    geom_range(height = 0.25) +
+    geom_range(data = cds) +
+    labs(y = "") +
+    #scale_fill_distiller(name = colourby, palette = "RdBu") + 
+    theme_jh()  +
+    scale_fill_viridis_d(name=NULL) + ggtitle("PICALM gene") + xlab("chr11")  + theme(legend.position = "bottom", legend.spacing.x  =  unit(0.01, 'cm'), legend.key.size = unit(0.25, 'cm')) 
+  
+ if(!is.null(coords)){
+    transcript_gtf <- transcript_gtf + xlim(coords[1], coords[2])
+ }
+
+#p
+
+```
+
+
+```{r}
+  # create little key for isoform class
+  p_class <- 
+    transcript_gtf %>%
+      arrange((regular_FDR)) %>%
+    mutate( transcript_id = factor(transcript_id, levels = unique(rev(transcript_id)))) %>%
+    ggplot(aes(x = 1, y = transcript_id)) + 
+    geom_tile( aes(fill = predicted_NMD), colour = "black")  +
+    scale_x_discrete(expand = c(0,0)) +
+    scale_y_discrete(expand = c(0,0)) +
+    labs(x = "", y = "", fill = "") +  theme_jh() +
+    theme(axis.text.y = element_blank(), legend.key.size = unit(0.25, 'cm'), legend.position = "bottom", legend.direction = "vertical") +
+    scale_fill_manual(values = c("firebrick", "navy"), labels = c("protein-coding","NMD-sensitive", "non-coding")) + ggtitle("coding status") 
+plot_widths <- c(0.8, 0.1)
+#plot_widths <- c(0.1, 0.025)
+#p_class
+```
+
+```{r}
+
+#fig <- p + p_class + plot_layout(ncol = 2, widths =  plot_widths)
+#fig
+```
+
+```{r}
+#ggsave(plot = fig, filename = "/Users/ericabrophy/Documents/plots/svz_gene_CSF1R.pdf", width = 165, height = 80, units = "mm")
+```
+
+```{r}
+es <- transcript_gtf %>%
+      arrange(regular_FDR) %>%
+    mutate( transcript_id = factor(transcript_id, levels = unique(rev(transcript_id))))
+es
+```
+
+```{r}
+es <- transcript_gtf %>%
+      arrange((regular_FDR)) %>%
+    mutate( transcript_id = factor(transcript_id, levels = unique(rev(transcript_id)))) %>%
+  ggplot(aes(transcript_id, estimates), estimates) + 
+  #ggplot(aes(reorder(transcript_id, regular_FDR), estimates)) +
+    coord_flip() + theme_jh() + xlab("") +
+  geom_point(position = position_dodge(width = 0.2), size =0.5) +
+  geom_errorbar(aes(ymin=estimates-se, ymax=estimates+se), width=0.2, size=0.25) + geom_hline(yintercept=0,linetype=3)
+es
+```
+
+```{r}
+plot_widths <- c(3, 0.25, 1)
+fig <- p + p_class + es + plot_layout(ncol = 3, widths =  plot_widths)
+fig
+```
+
+```{r}
+#ggsave(plot = fig, filename = "/Users/ericabrophy/Documents/plots/svz_gene_PICALM_fdr.pdf", width = 150, height = 80, units = "mm")
+```
+
+```{r}
+classification_paper <- subset(classification, select = c("isoform", "structural_category", "ensembl"))
+
+#names(classification_subset)[1] <- "transcript_id"
+#DTU_paper <- left_join(DTU_tpm, DTU, by = "isoform")
+#names(gencode)[1] <- "ensembl"
+#DTU_paper <- left_join(DTU_paper, gencode, by = "ensembl")
+DTU_paper <- subset(DTU_tpm, select = c("isoform", "estimates", "pval", "regular_FDR", "ensembl", "gene_name", "Category", "median_tpm"))
+```
+
+```{r}
+#write_tsv(DTU_paper, "/Users/ericabrophy/Documents/plots/SVZ_DTU_table.tsv")
+```
+
+
+

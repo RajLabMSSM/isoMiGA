@@ -1,0 +1,447 @@
+---
+title: "DREAM SVZxOTHER"
+output: html_notebook
+---
+
+Load libraries
+```{r message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+#library(here)
+library(tidyr)
+library(tidyverse)
+library(DESeq2)
+library(edgeR)
+library(data.table)
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+library(ggrepel)
+library(variancePartition)
+library(BiocParallel)
+library(pander)
+library(doParallel)
+library(ggrastr)
+```
+
+```{r}
+load("/sc/arion/projects/als-omics/microglia_isoseq/Erica/figure_scripts/dream_SVZvOther.RData")
+```
+
+
+DE for raj cohort SVZ vs all other regions
+```{r message=FALSE, warning=FALSE}
+#raj combined salmon counts
+load("/sc/arion/projects/als-omics/microglia_isoseq/Erica/salmon_results_combined/raj_results/raj_results_combined_salmon_counts.RData")
+raj_tpm <- tx_tpm
+raj_counts <- tx_counts
+
+load("/sc/arion/projects/als-omics/microglia_isoseq/Erica/salmon_results_combined/raj2_results/raj2_results_combined_salmon_counts.RData")
+raj2_tpm <- tx_tpm
+raj2_counts <- tx_counts
+
+tx_tpm <- cbind(raj_tpm, raj2_tpm)
+tx_counts <- cbind(raj_counts, raj2_counts)
+
+#combined annotations
+annotations <- read_table2("/sc/arion/projects/als-omics/microglia_isoseq/mmQTL-pipeline/input/gencode_novel_transcript_pheno_meta.tsv")
+names(annotations)[4] <- "transcript_id"
+names(annotations)[5] <- "gene_id"
+annotations$gene_name <- gsub(" ", "", paste(annotations$gene_id, "_", annotations$chr, ":", annotations$start, "-", annotations$end))
+
+#metadata
+metadata <- read_tsv("/sc/arion/projects/als-omics/microglia_isoseq/raj_short_read/raj_microglia_metadata_255_qc_pass.tsv")
+
+classification <- read_delim("/sc/arion/projects/als-omics/microglia_isoseq/isoseq-pipeline/results/stringtie2/filter2/raj_roussos_0922_stringtie_mix_filter_sqanti_classification.tsv.gz", 
+    "\t", escape_double = FALSE, trim_ws = TRUE)
+names(classification)[7] <- "ensembl"
+
+#GENCODE annotations
+gencode <- rtracklayer::import("/sc/arion/projects/ad-omics/data/references/hg38_reference/GENCODE/gencode.v38.primary_assembly/gencode.v38.primary_assembly.annotation.gtf")
+gencode <- as.data.frame(gencode)
+gencode <- subset(gencode, select = c('gene_id', 'gene_name'))
+gencode <- unique(gencode)
+colnames(gencode) <- c("ensembl", "gene_name")
+```
+
+Create metadata with sample ID and brain region (split by second -)
+```{r}
+meta <- as.data.frame(colnames(tx_tpm))
+names(meta) <- "sample_ID"
+meta$region = as.character(lapply(strsplit(as.character(meta$sample_ID), split="-"),
+                        tail, n=1))
+```
+
+Pull out selected regions: MFG, SVZ, THA, STG
+```{r}
+meta <- filter(meta, region == "SVZ" | region == "GFM" | region == "THA" | region =="GTS" | region == "MGF")
+```
+
+Filter by SVZ region
+```{r}
+meta$group<-ifelse(meta$region == "SVZ","SVZ","Other")
+table(meta$group)
+```
+
+
+Subset metadata by desired samples
+```{r}
+names(metadata)[1] <- "sample_ID"
+x <- metadata[!metadata$sample_ID %in% meta$sample_ID,]
+metadata_selected <- inner_join(meta, metadata, by = "sample_ID")
+metadata_selected$batch_number <- "batch1"
+metadata_selected <- subset(metadata_selected, select = c("sample_ID", "donor_id", "sex", "age", "region","batch_number", "cause_of_death_categories", "picard_pct_mrna_bases", "picard_summed_median",  "picard_pct_ribosomal_bases"))
+```
+
+Add in the stimulated metadata - 122 samples
+```{r message=FALSE, warning=FALSE}
+stimulated_metadata <- read.table("/sc/arion/projects/als-omics/microglia_isoseq/Erica/raj_stimulated_metadata.txt", header = TRUE)
+stimulated_metadata <- stimulated_metadata %>% remove_rownames()
+stimulated_metadata$Sample[484] <- "MG-01-SVZ-RNA"
+#stimulated_metadata$Sample[488] <- "MG-03-SVZ-RNA"
+stimulated_metadata$batch_number <- "batch2"
+```
+
+Metadata - katia 255 miga
+Metadata_stimulated <- stimulated samples 8 
+```{r}
+stimulated_metadata$sample_ID <- gsub('-RNA','',stimulated_metadata$Sample)
+stimulated_metadata <- stimulated_metadata[stimulated_metadata$sample_ID %in% meta$sample_ID,]
+stimulated_metadata <- inner_join(meta, stimulated_metadata, by = "sample_ID")
+
+stimulated_metadata <- subset(stimulated_metadata, select = c("sample_ID", "Donor_id","sex",  "age", "region", "batch_number", "Cause_of_death_categories", "picard_pct_mrna_bases", "picard_summed_median",  "picard_pct_ribosomal_bases"))
+
+names(stimulated_metadata)[2] <- "donor_id"
+names(stimulated_metadata)[7] <- "cause_of_death_categories"
+
+
+metadata_all <- rbind(metadata_selected, stimulated_metadata)
+```
+
+
+Break up GENCODE rowname annotations
+```{r}
+#pull out iso gene and transcript information from annotation file
+gene_id <- annotations$gene_id 
+transcript_id <- annotations$transcript_id
+df <- as.data.frame(gene_id) 
+df$transcript_id <- transcript_id
+
+tx_counts <- tibble::rownames_to_column(tx_counts, "transcript_id")
+tx_counts <- separate(data = tx_counts, col = transcript_id, into = c("transcript_id", "gene_id", "havana_gene", "havana_transcript", "transcript_name", "gene_name", "x", "transcript_type"), sep = "\\|")
+tx_counts <- subset( tx_counts, select = -c(gene_id, havana_gene, havana_transcript, transcript_name, gene_name, x, transcript_type))
+
+df_count <- left_join(tx_counts, df, by = "transcript_id") %>% dplyr::select(gene_id, everything()) %>% dplyr::select(-transcript_id)
+gene_counts <- df_count %>% group_by(gene_id) %>% summarise_all(sum)
+```
+
+Sum up all transcripts per gene for DE analysis
+```{r}
+gene_counts <- column_to_rownames(gene_counts, var = "gene_id")
+gene_counts <- gene_counts[,colnames(gene_counts) %in% metadata_all$sample_ID]
+```
+
+Filter by Median TPM > 0.10
+```{r}
+tx_tpm <- tibble::rownames_to_column(tx_tpm, "transcript_id")
+tx_tpm <- separate(data = tx_tpm, col = transcript_id, into = c("transcript_id", "gene_id", "havana_gene", "havana_transcript", "transcript_name", "gene_name", "x", "transcript_type"), sep = "\\|")
+tx_tpm <- subset( tx_tpm, select = -c(gene_id, havana_gene, havana_transcript, transcript_name, gene_name, x, transcript_type))
+
+df_tpm <- left_join(tx_tpm, df, by = "transcript_id") %>% dplyr::select(gene_id, everything()) %>% dplyr::select(-transcript_id)
+gene_tpm <- df_tpm %>% group_by(gene_id) %>% summarise_all(sum)
+
+
+iso_genes <- gene_tpm$gene_id
+gene_tpm <- column_to_rownames(gene_tpm, var = "gene_id")
+
+#gene_tpm <- gene_tpm %>% remove_rownames %>% column_to_rownames(var="Gene")
+median_gene_tpm <- enframe(rowMedians(as.matrix(gene_tpm)), name = "Gene", value = "median_tpm")
+median_gene_tpm <- cbind(median_gene_tpm, iso_genes)
+keep.exp <- dplyr::filter(median_gene_tpm, median_tpm > 0.1)
+keep.exp <- keep.exp$iso_genes
+#keep.exp =  rowSums(cpm(gene_tpm) > 1) >= 0.5*ncol(gene_tpm)
+x <- gene_counts[keep.exp,]
+```
+
+# columns of counts data == # rows of metadata
+```{r}
+metadata_all$sample_ID <- as.factor(metadata_all$sample_ID)
+metadata_all$region <- as.factor(metadata_all$region)
+metadata_all$cause_of_death_categories[metadata_all$cause_of_death_categories %in% NA] <- "Other"
+metadata_all$sex <- as.factor(metadata_all$sex)
+metadata_all$age <- as.numeric(metadata_all$age)
+metadata_all$donor_id <- as.factor(metadata_all$donor_id)
+metadata_all$picard_pct_mrna_bases <- as.numeric(metadata_all$picard_pct_mrna_bases)
+metadata_all$picard_pct_ribosomal_bases <- as.numeric(metadata_all$picard_pct_ribosomal_bases)
+metadata_all$picard_summed_median <- as.numeric(metadata_all$picard_summed_median)
+metadata_all$batch_number <- as.factor(metadata_all$batch_number)
+```
+
+```{r}
+metadata_all$group<-ifelse(metadata_all$region == "SVZ","SVZ","Other")
+table(meta$group)
+metadata_all$group <- as.factor(metadata_all$group)
+```
+
+Add params for DREAM
+```{r}
+params = BiocParallel::MulticoreParam(workers=4, progressbar=T)
+register(params)
+registerDoParallel(4)
+```
+
+## Dream analysis {.tabset .tabset-fade .tabset-pills} 
+```{r dream, echo=TRUE}
+# Check variance partition version 
+# packageVersion("variancePartition")  # Must be 1.17.7
+# The variable to be tested should be a fixed effect
+form <- ~ group + (1|sex) + (1|donor_id) + age + (1|cause_of_death_categories)+ picard_pct_mrna_bases + picard_summed_median + picard_pct_ribosomal_bases + (1|batch_number) 
+# estimate weights using linear mixed model of dream
+vobjDream = suppressWarnings( voomWithDreamWeights( x, form, metadata_all ) ) # supressing messages because of Biocparallel was generating a lot of messages  
+ 
+# Fit the dream model on each gene
+# By default, uses the Satterthwaite approximation for the hypothesis test
+fitmm = suppressWarnings (dream( vobjDream, form, metadata_all )) 
+# Examine design matrix
+#createDT(fitmm$design, 3)
+res <- data.frame(topTable(fitmm, coef='groupSVZ', 
+                                 number=nrow(x), sort.by = "p"), check.names = F)
+```
+
+Add gene symbols and name
+```{r}
+#res <- results(dds, name="group_SVZ_vs_Other")
+#DE <- sum(res$adj.P.Val < 0.05, na.rm=TRUE)
+res <- as.data.frame(res)
+
+ens.str <- substr(rownames(res), 1, 15)
+res$symbol <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+res$entrez <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res$name =   mapIds(org.Hs.eg.db,
+                     keys=ens.str, 
+                     column="GENENAME",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+
+
+resOrdered <- res[order(res$adj.P.Val),] 
+resOrdered <- as.data.frame(resOrdered)
+resOrdered <- rownames_to_column(resOrdered, var = "ensembl")
+resOrdered$P.Value <- ifelse(resOrdered$P.Value < 1e-40, -Inf, resOrdered$P.Value)
+```
+
+
+Antisense gene naming
+```{r}
+AS_meta <- filter(resOrdered, grepl("_AS", ensembl))
+
+AS_meta$gene_name <-
+  map_chr(str_split(AS_meta$ensembl, "\\_" ), ~{
+    split <- map_chr( str_split(.x, "_"), ~{
+      paste(gencode$gene_name[ match(.x, gencode$ensembl)], collapse = "_")
+    })
+    paste(split, collapse = "_")
+  })
+
+AS_meta$gene_name <- gsub(x = AS_meta$gene_name, pattern = "NA_", replacement = "novelGene_")  
+AS_meta$gene_name <- gsub(x = AS_meta$gene_name, pattern = "_NA", replacement = "_AS") 
+
+resOrdered$gene_name <- AS_meta$gene_name[match(resOrdered$ensembl, AS_meta$ensembl)]
+
+AS_meta$Category <- "Antisense"
+AS_meta$gene_name <- gsub(x = AS_meta$gene_name, pattern = "novelGene_", replacement = "")
+```
+
+Fusion gene naming
+```{r}
+fusion_meta <- filter(resOrdered, grepl("\\+ENS|_ENS", ensembl))
+fusion_meta <- subset(fusion_meta, !fusion_meta$ensembl %in% AS_meta$ensembl) 
+  
+fusion_meta$gene_name <-
+  map_chr(str_split(fusion_meta$ensembl, "\\+" ), ~{
+    split <- map_chr( str_split(.x, "_"), ~{
+      paste(gencode$gene_name[ match(.x, gencode$ensembl)], collapse = "+")
+    })
+    paste(split, collapse = "+")
+  })
+  
+fusion_meta$Category <- "Fusion"
+resOrdered$gene_name <- fusion_meta$gene_name[match(resOrdered$ensembl, fusion_meta$ensembl)]
+```
+
+Novel gene naming
+```{r}
+novel_meta <- filter(resOrdered, grepl("novelGene_", ensembl))
+novel_meta <- subset(novel_meta, !novel_meta$ensembl %in% AS_meta$ensembl) 
+novel_meta <- novel_meta[,-11]
+novel_annotations <- annotations[annotations$gene_id %in% novel_meta$ensembl,]
+names(novel_annotations)[5] <- "ensembl"
+novel_annotations <- novel_annotations[,5:6]
+novel_meta <- inner_join(novel_meta, novel_annotations, by = "ensembl")
+novel_meta$gene_name <- gsub(x = novel_meta$gene_name, pattern = "e_.*_", replacement = "e_") 
+#novel_meta <- novel_meta[,-11]
+novel_meta$Category <- "Novel"
+```
+
+Add annotated gene names
+```{r}
+x <- rbind(AS_meta, fusion_meta, novel_meta)
+annotated <- subset(resOrdered, !resOrdered$ensembl %in% x$ensembl) 
+annotated <- annotated[,-11]
+annotated <- inner_join(annotated, gencode, by = "ensembl")
+annotated$Category <- "Annotated"
+```
+
+FUll df
+```{r}
+resOrdered <- rbind(annotated, x)
+```
+
+Add gene regulation type for df
+```{r}
+resOrdered <- resOrdered %>%
+  mutate(gene_type = case_when(logFC >= 1 & adj.P.Val <= 0.05 ~ "up",
+                               logFC <= 1 & adj.P.Val <= 0.05 ~ "down",
+                               TRUE ~ "ns"))
+
+table(resOrdered$gene_type)
+```
+
+Filter for significance and noise
+```{r}
+sig_res <- filter(resOrdered, adj.P.Val < 0.05)
+sig_res_FC <- subset(sig_res, logFC > 1 | logFC < -1)
+```
+
+Pull out novel genes for gene labels
+```{r}
+ils <- as.array(rownames(gene_counts))
+il_genes <- sig_res_FC %>%
+  filter(ensembl %in% ils) 
+#resOrdered_LPS <- rownames_to_column(resOrdered_LPS, var = "ensembl")
+novel_il_genes <- subset(il_genes, Category == c("Novel", "Fusion", "Antisense"))
+novel_il_genes <- novel_il_genes %>% as.data.frame() %>% 
+  arrange((adj.P.Val))
+#novel_il_genes <- novel_il_genes[1:5,]
+names(novel_il_genes)[1] <- "symbol"
+names(novel_il_genes)[8] <- "ensembl"
+novel_il_genes <- novel_il_genes[c("ensembl", "logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "z.std", "symbol", "entrez","name","Category")]
+  
+il_genes <- sig_res_FC %>%
+  filter(ensembl %in% ils) 
+sorted_il_genes <- il_genes %>% as.data.frame() %>% 
+  arrange((adj.P.Val))
+#sorted_il_genes <- sorted_il_genes[1:50,]
+#sorted_il_genes <- rbind(sorted_il_genes, novel_il_genes)
+novel_FC <- unique(x)
+novel_FC <- filter(novel_FC, adj.P.Val < 0.05)
+novel_FC <- subset(novel_FC, logFC > 1 | logFC < -1)
+```
+
+
+DF for only novel genes
+```{r message=FALSE, warning=FALSE}
+# F_novel_il_genes <- subset(il_genes, Category == "Fusion")
+# A_novel_il_genes <- subset(il_genes, Category == "Antisense")
+# N_novel_il_genes <- subset(il_genes, Category == "Novel")
+# novel_il_genes <- rbind(F_novel_il_genes, A_novel_il_genes, N_novel_il_genes)
+novel_il_genes <- novel_FC %>% as.data.frame() %>% 
+  arrange((adj.P.Val))
+names(novel_il_genes)[1] <- "symbol"
+names(novel_il_genes)[8] <- "ensembl"
+#novel_il_genes <- novel_il_genes[c("ensembl", "baseMean", "log2FoldChange", "lfcSE","stat", "pvalue", "padj", "symbol", "entrez", "name","Category")]
+
+sorted_il_genes <- novel_il_genes[1:10,]
+sorted_il_genes <- sorted_il_genes[-4,]
+sorted_il_genes <- sorted_il_genes[-6,]
+sorted_il_genes <- sorted_il_genes[-2,]
+sorted_il_genes <- sorted_il_genes[-2,]
+```
+
+Add gene regulation for novel genes 
+```{r}
+novel_il_genes <- novel_il_genes %>%
+  mutate(gene_type = case_when(logFC >= 1 & adj.P.Val <= 0.05 ~ "up",
+                               logFC <= 1 & adj.P.Val <= 0.05 ~ "down",
+                               TRUE ~ "ns"))
+
+```
+
+
+Jack's ggplot theme for paper
+```{r}
+theme_jh <- function () { 
+    theme_bw(base_size=5, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 7)
+        )
+}
+```
+
+```{r}
+table(novel_il_genes$Category, novel_il_genes$gene_type)
+```
+
+SVZ DEGs plot
+
+
+            down up
+Antisense    7  5
+Fusion      50  6
+Novel       16  3
+```{r}
+options(ggrepel.max.overlaps = 15)
+# Add subplot layer to the main volcano plot -----------------------------------
+p1 <- ggplot(data = resOrdered, # Original data  
+       aes(x = logFC, y = -log10(P.Value))) + 
+  #geom_point(aes(colour = class ), size = 0.5) +
+  rasterize(geom_point(colour = "grey", alpha = 0.5, size = 0.5), dpi = 600) +
+  geom_point(data = novel_il_genes, aes(col = Category),
+             size = 0.5) +  
+  scale_color_manual(values = c("#5E3C99", "#21908CFF", "darkorange2")) +
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") + 
+  geom_vline(xintercept = c(log2(0.5), log2(2)),
+             linetype = "dashed") + ggtitle("SVZ DEGs") + 
+  geom_text_repel(data = sorted_il_genes, aes(
+      label = gene_name), fontface = "italic", size = 5*5/14, min.segment.length = 0) + xlim(-4,4)  + ylim(0,40) +
+    annotate("text", x =c(-3.5, -3, -2.5), y = 35, label = c("7","50","16"), colour = c("#5E3C99", "#21908CFF", "darkorange2"), size = 2)+ 
+    annotate("text", x =c(2.5, 3, 3.5), y = 35, label = c("5","6","3"), colour = c("#5E3C99", "#21908CFF", "darkorange2"), size = 2) +
+    annotate("text", x =c(-3, 3), y = 38, label = c("down", "up"), size = 2) + theme_jh() + theme(legend.position = "top", legend.spacing.x  =  unit(0.01, 'cm'))  + ylab("-log10(pvalue)")
+
+p1
+```
+
+Save plot
+```{r}
+#ggsave(plot = p1, filename = "/sc/arion/projects/als-omics/microglia_isoseq/Erica/figure_scripts/plots/SVZ_degs_labels2.pdf", width = 60, height = 60, units = "mm")
+```
+
+
+
+```{r}
+DTU_paper <- subset(resOrdered, select = c("ensembl", "logFC", "P.Value", "adj.P.Val",  "gene_name", "Category"))
+#write_tsv(DTU_paper, "/sc/arion/projects/als-omics/microglia_isoseq/Erica/figure_scripts/SVZ_DEGs.tsv")
+```
+
+
