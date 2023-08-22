@@ -35,13 +35,13 @@ Genotype quality control: https://github.com/RajLabMSSM/Genotype_QC_Pipeline_2.0
 ## Long-read RNA-seq isoforms
 
 [script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/describe_stringtie.Rmd)
-
+|
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
 ## Genotype QC
 
 [script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/genotype_qc.Rmd)
-
+|
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
 ## Mass spectrometry
@@ -57,25 +57,25 @@ todo
 ## MESC
 
 [script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/MESC.Rmd)
-
+|
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
 ## QTL Mapping
 
 [script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/explore_mmQTL_results.Rmd)
-
+|
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
 ## GWAS Colocalization
 
 [script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/COLOC.Rmd)
-
+|
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
 ## Visualizing QTLs
 
 [script](https://github.com/RajLabMSSM/isoMiGA/blob/master/scripts/QTL_schematic_plots.Rmd)
-
+|
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
 
 
