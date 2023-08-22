@@ -2,6 +2,10 @@
 
 Jack Humphrey, Erica Brophy, Towfique Raj lab 2023
 
+---
+
+
+
 ![overview](https://github.com/RajLabMSSM/isoMiGA/raw/main/isomiga_schematic.png)
 
 
@@ -11,13 +15,13 @@ Using an atlas of novel isoforms, we show that microglia use a range of isoforms
 
 We then map genetic associations with isoform usage and other types of RNA splicing, observing that multiple GWAS variants act through novel microglia isoforms in Alzheimer's and Parkinson's disease.
 
+---
 
-
-### Manuscript 
+## Manuscript 
 
 In progress
 
-### Pipelines
+## Pipelines
 
 Short-read RNA-seq processing:  https://github.com/CommonMindConsortium/RAPiD-nf
 
