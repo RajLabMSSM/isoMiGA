@@ -52,9 +52,35 @@ Genotype quality control: https://github.com/RajLabMSSM/Genotype_QC_Pipeline_2.0
 
 ## Differential analyses
 
-[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/IFNg_ipsc_DE_salmon_combined_fig3.Rmd)
+### Stimulation response
+
+Differential gene expression
+
+[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/region_deg.Rmd)
 |
 [html](https://RajLabMSSM.github.io/isoMiGA/html/)
+
+Differential transcript usage
+
+[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/region_dtu.Rmd)
+|
+[html](https://RajLabMSSM.github.io/isoMiGA/html/)
+
+### Region specificity
+
+Differential gene expression
+
+[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/stimulation_deg.Rmd)
+|
+[html](https://RajLabMSSM.github.io/isoMiGA/html/)
+
+Differential transcript usage
+
+[script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/stimulation_dtu.Rmd)
+|
+[html](https://RajLabMSSM.github.io/isoMiGA/html/)
+
+
 ## MESC
 
 [script](https://github.com/RajLabMSSM/isoMiGA/blob/main/scripts/MESC.Rmd)
