@@ -1,0 +1,281 @@
+---
+title: "Proteomics"
+author: "Jack Humphrey"
+date: "1/6/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readxl)
+library(patchwork)
+library(ggrepel)
+```
+
+```{r}
+# global <- read_tsv("external/TaoLiu_Proteomics/Global_all_withoutZscore.txt") %>% janitor::clean_names()
+# phospho <- read_tsv("external/TaoLiu_Proteomics/Phospho_all_withoutZscore.txt") %>% janitor::clean_names()
+# 
+genetype_df <- read_tsv("data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_combined.genetypes.tsv.gz")
+
+sqanti <- read_tsv("data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_filter_sqanti_classification.tsv.gz")
+
+roussos_tpm <- read_tsv("data/salmon/roussos_combined_transcript_tpm_summary.tsv.gz")
+
+gene_meta <- read_tsv("~/GENCODE/gencode.v38.primary_assembly.gene_meta.tsv.gz")
+
+sqanti <- sqanti %>%
+  mutate( coding_class = case_when(
+    coding == "coding" & predicted_NMD == FALSE ~ "protein-coding",
+    coding == "coding" & predicted_NMD == TRUE ~ "coding (NMD)",
+    coding == "non_coding" ~ "non-coding"
+  )) %>% mutate( coding_class = factor(coding_class, levels = c("protein-coding", "coding (NMD)", "non-coding"))) %>%
+  mutate(annotation_class = ifelse(structural_category == "full splice match", "annotated", "novel")) %>%
+  mutate( class_label = case_when(
+    structural_category == "full splice match" ~ "FSM",
+    structural_category == "incomplete splice match" ~ "ISM",
+    structural_category == "novel in catalog" ~ "NIC",
+    structural_category == "novel not in catalog" ~ "NNC",
+    structural_category == "fusion" ~ "FUS",
+    structural_category == "intergenic" ~ "INT",
+    structural_category == "genic" ~ "GEN",
+    structural_category == "antisense" ~ "ANS"
+  ) )
+
+```
+
+V2
+
+```{r}
+#ms2 <- readxl::read_excel(here::here("external/TaoLiu_Proteomics/v2/Precursors_ORFs_Microglia.xlsx"), sheet = 1) %>% janitor::clean_names()
+
+ms3 <- readxl::read_excel(here::here("external/TaoLiu_Proteomics/v3/Precursors_ORFs_Microglia_GENECODE.xlsx"), sheet = 1) %>% janitor::clean_names()
+
+# remove duplicate peptides - sum together abundances and take mean of coverage
+ms_df <- select(ms3, 
+                peptide = peptide_sequence, overlaps = protein_ids, abundance = average_abundacne, 
+                n =  no_of_datasets_identified_out_of_68) %>%
+  group_by(peptide) %>%
+  summarise(overlaps = paste(unique(overlaps), collapse = "+" ), abundance = sum(abundance), n = mean(n) ) %>% 
+  mutate(type = case_when(
+    grepl("MSTRG", overlaps) & grepl("ENST", overlaps) ~ "annotated+novel",
+    grepl("ENST", overlaps) ~ "annotated-only",
+    grepl("MSTRG", overlaps) ~ "novel-only"
+  ))
+
+# write out for supplementary
+ms_df_table <- ms_df %>%
+  mutate( n_samples_detected_in = signif(n, 2)) %>%
+  select(-n)
+write_tsv(ms_df_table, file = "tables/all_peptides_supp_table.tsv")
+
+tally_df <- group_by(ms_df, type) %>% tally() %>% mutate(type_label = paste0(type, "\n(", prettyNum(n, big.mark = ","), ")"))
+
+ms_multiplot <-
+(
+ms_df %>%
+  left_join(tally_df, by = "type") %>%
+  ggplot(aes(x = type_label, y = log10(abundance) )) + 
+  geom_boxplot(notch = TRUE, outlier.colour = NA) +
+  ggpubr::stat_compare_means(ref.group = "annotated-only\n(69,540)", method = "wilcox.test",label = "p.format",label.y.npc = 0.95) +
+  theme_bw() +
+labs(x = "", y = expression(log[10]~"(peptide abundance)")) +
+
+ms_df %>%
+  left_join(tally_df, by = "type") %>%
+  ggplot(aes(x = type_label, y = n.x / 68 )) + 
+  geom_boxplot(notch = TRUE) +
+  ggpubr::stat_compare_means(ref.group = "annotated-only\n(69,540)", method = "wilcox.test", label = "p.format",label.y.npc = 0.95) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0,1.1)) +
+  labs(y = "sample coverage (n = 68)", x = "") +
+  theme_bw() +
+  theme(axis.text = element_text(colour = "black"))
+
+) /
+
+ms_df %>%
+  left_join(tally_df, by = "type") %>%
+  mutate(bin = ntile(x = n.x, n = 4)) %>%
+  ggplot(aes(y = log10(abundance), x = bin )) + 
+  geom_boxplot(aes(group = bin ), outlier.colour = NA) +
+  facet_wrap(~type_label) +
+  #ggpubr::stat_compare_means(ref.group = "annotated-only", method = "t.test") +
+  #scale_y_continuous(labels = scales::percent_format()) +
+  labs(y = expression(log[10]("peptide abundance") ), x = "Binned sample coverage quartile") +
+  theme_bw() +
+plot_annotation(tag_levels = "a") &
+  theme(plot.tag = element_text(face = "bold"),
+        axis.text = element_text(colour = "black"), 
+        strip.background = element_blank() 
+        ) 
+
+ms_multiplot
+ggsave(plot = ms_multiplot, filename = "plots/mass_spec_multiplot.png", width = 8, height = 7, dpi = 300)
+
+
+
+## novel-only peptides are less abundant and found in fewer samples than annotated or shared peptides.
+```
+
+
+```{r}
+# make it isoform-focussed. How many isoforms have peptide support?
+ms_df$isoform <- str_split(ms_df$overlaps, pattern = ";")
+
+isoform_ms <- unnest(ms_df, cols = c(isoform)) %>%
+  mutate(transcript_id = str_split_fixed(isoform, "\\|", 3 )[,2] ) %>%
+  mutate(gene_id = str_split_fixed(isoform, "\\|", 4 )[,3] ) %>%
+  mutate(transcript_id = ifelse(transcript_id == "", isoform, transcript_id)) %>%
+  mutate(gene_id = ifelse(gene_id == "", sqanti$associated_gene[match(.$isoform, sqanti$isoform)], gene_id) ) %>%
+  left_join(gene_meta, by = "gene_id")
+#%>%
+
+# count number of peptides per isoform
+isoform_counts <- group_by(isoform_ms, gene_name, transcript_id) %>% 
+  summarise("n_peptides" = n(), total_abundance = sum(abundance)) %>%
+  left_join(sqanti, by = c("transcript_id" = "isoform") ) %>%
+  mutate(annotation_class = ifelse(is.na(annotation_class), "GENCODE-only", annotation_class)) 
+#  mutate(gene_name = gene_meta$gene_name[match(.$gene_id, gene_meta$gene_id)] )
+#  mutate(gene_id = sqanti$associated_gene[match(.$isoform, sqanti$isoform)]) %>%
+
+
+#91,116 isoforms have peptide matches
+dim(isoform_counts)
+
+# 9281 genes
+length(unique(isoform_counts$associated_gene))
+
+novel_ms_iso <- filter(ms_df, type == "novel-only") %>% arrange(desc(n)) %>%
+  unnest(cols = isoform) %>%
+  mutate(gene_id = sqanti$associated_gene[match(.$isoform, sqanti$isoform)]) %>%
+  mutate(gene_name = gene_meta$gene_name[match(.$gene_id, gene_meta$gene_id)] )
+
+dim(novel_ms_iso)
+
+# get all peptides for the genes with novel peptide matches to send to Tao and Reta
+peptide_df <- 
+  isoform_ms %>%
+  filter(gene_id %in% novel_ms_iso$gene_id) %>%
+  select(peptide) %>%
+  distinct()
+
+writeLines(peptide_df$peptide, con = "data/2023_stringtie_mix/novel_peptide_genes_all_peptides.txt")
+
+# 112 novel isoforms
+dim(novel_ms_iso)
+length(unique(novel_ms_iso$gene_id))
+# 65 genes
+
+novel_ms_iso %>% arrange(desc(n))
+
+novel_ms_iso  %>% select(peptide, gene_name, gene_id) %>% distinct() %>% group_by(gene_id, gene_name) %>% tally() %>% arrange(desc(n))
+
+filter(novel_ms_iso, gene_name == "SRRM1")
+
+
+```
+
+91,116 isoforms have at least 1 peptide match
+
+69 peptides match only to 112 novel isoforms.
+
+10 genes have at least 2 independent novel peptides supporting them.
+
+MSTRG.27182.4 and MSTRG.27182.2 are supposed to have the same start site and yet they have different start ORFs.
+Is GeneMarks fucking up the ORF prediction? It looks like the CDS location does not line up with the ORFs.
+
+Gloria suggests using CPAT instead but will that give the same info? 
+
+```{r}
+isoform_counts %>%
+  ggplot(aes(x = log10(total_abundance), y = n_peptides)) + geom_point()
+
+isoform_counts %>% arrange(desc(n_peptides)) %>%
+  select(isoform, n_peptides) %>%
+  head(30) %>%
+  as.data.frame()
+
+ 
+isoform_counts %>%
+  ggplot(aes(x = n_peptides)) + geom_histogram() + facet_wrap(~annotation_class) +
+  scale_y_log10()
+```
+
+ CPEALFQPSFLGMESCGIHDTTFNSIMK MSTRG.57945.2  
+
+
+```{r} 
+# MSTRG.41016.3 MSTRG.41016.4 are novel isoforms for NCOA5
+# both isoforms extend the penultimate exon which change the end of the protein.
+# SSTDSLPGELR is the peptide that unique maps to them
+
+```
+
+
+
+Compare peptide support for coding vs non-coding transcripts
+
+
+```{r}
+# as a proportion of tested isoforms, how many have at least 1 peptide?
+isoform_counts <- 
+  isoform_counts %>%
+  mutate(transcript_id = str_split_fixed(isoform_counts$isoform, "\\|", 3 )[,2] ) %>%
+    mutate(gene_id = str_split_fixed(isoform_counts$isoform, "\\|", 4 )[,3] ) %>%
+  mutate(transcript_id = ifelse(transcript_id == "", isoform, transcript_id)) %>%
+  left_join(gene_meta, by = "gene_id")
+
+isoform_counts$transcript_type_gencode <- genetype_df$transcript_type[match(isoform_counts$transcript_id, genetype_df$transcript_id)]
+
+isoform_counts %>%
+  ggplot(aes(x = transcript_type_gencode, y = n_peptides)) + geom_boxplot() 
+
+isoform_counts %>%
+  filter(coding_class != "non-coding") %>%
+  mutate(overlap = !is.na(n_peptides) ) %>%
+  group_by(coding_class, annotation_class, overlap) %>%
+  tally() %>%
+  pivot_wider(names_from = overlap, values_from = n) %>%
+  mutate(prop = `TRUE` / (`TRUE` + `FALSE`) )
+  
+# remove peptides found in both annotated and novel isoforms
+isoform_counts_noshare <- 
+  isoform_ms %>%
+  filter(type != "annotated+novel") %>%
+  group_by(isoform) %>% 
+  tally(name = "n_peptides") %>%
+  right_join(sqanti, by = "isoform")
+
+# as a proportion of tested isoforms, how many have at least 1 peptide?
+isoform_counts_noshare %>%
+  filter(coding_class != "non-coding") %>%
+  mutate(overlap = !is.na(n_peptides) ) %>%
+  group_by(coding_class, annotation_class, overlap) %>%
+  tally() %>%
+  pivot_wider(names_from = overlap, values_from = n) %>%
+  mutate(prop = `TRUE` / (`TRUE` + `FALSE`) )
+
+isoform_counts_noshare %>%
+  filter(annotation_class == "novel", coding_class != "non-coding") %>%
+  group_by(!is.na(n_peptides), structural_category) %>%
+  tally()
+
+filter(isoform_counts_noshare, !is.na(n_peptides), annotation_class == "novel", coding_class != "non-coding" )   %>% arrange(desc(n_peptides)) %>% head() %>% View()
+
+
+isoform_counts %>%
+ggplot(aes(x = structural_category, y = n_peptides)) + geom_point()
+
+
+sqanti_ms %>%
+  filter(coding_class != "non-coding") %>%
+  ggplot(aes(x = log10(CDS_length), y = n_peptides )) + geom_point(aes(colour = coding_class)) + facet_wrap(~annotation_class)
+
+
+
+
+ tally()
+  ggplot(aes(x = coding_class, y = n)) + geom_point() + facet_wrap(~annotation_class)
+```
+

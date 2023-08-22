@@ -1,0 +1,1037 @@
+---
+title: "COLOC"
+author: "Jack Humphrey"
+date: "9/20/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(patchwork)
+
+theme_jh <- function () { 
+    theme_bw(base_size=5, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 7)
+        )
+}
+```
+
+
+
+```{r}
+prep_coloc <- function( all_res, ld_res, LD = TRUE){
+  all_coloc_res <- read_tsv( all_res)
+  if(LD){
+  coloc_res_ld <- read_tsv(ld_res)
+  
+  coloc_res <- full_join(all_coloc_res, coloc_res_ld)
+  }else{
+    coloc_res <- all_coloc_res
+    coloc_res$LD <- NA
+  }
+  coloc_res <- mutate(coloc_res, coloc = PP.H3.abf + PP.H4.abf > 0.8 & (PP.H4.abf / PP.H3.abf) >= 2 )
+  coloc_res$SNP_distance <- abs(coloc_res$GWAS_pos - coloc_res$QTL_pos)
+  coloc_res <- mutate(coloc_res, distance_filter = case_when( 
+    grepl("expression|caQTL", QTL) & (SNP_distance < 5e5 | (!is.na(LD) & LD >= 0.1 ) ) ~ "PASS",
+    !grepl("expression|caQTL", QTL) & (SNP_distance < 5e5  | (!is.na(LD) & LD >= 0.1) ) ~ "PASS",
+    TRUE ~ "FAIL"
+  ) )
+  table(coloc = coloc_res$coloc, filter = coloc_res$distance_filter)
+  #coloc_res <- filter(coloc_res, distance_filter == "PASS")
+  return(coloc_res)
+}
+
+make_coloc_plot <- function(mydisease, min_gwas_p = 1e-5, min_PP4 = 0.7, all = all_coloc, best = best_per_locus){
+  # get out loci that contain at least one gene with PP4 > min_PP4
+  coloc_hits <- filter(all, disease == mydisease, PP.H4.abf > min_PP4 )
+  locus_order <- coloc_hits %>% pull(locus) %>% unique()
+
+  to_plot <- 
+  all_coloc %>%
+  filter(disease == mydisease, distance_filter == "PASS") %>%
+  #filter(!is.na(tissue)) %>%
+  filter(paste(locus, QTL_Gene) %in% paste(coloc_hits$locus, coloc_hits$QTL_Gene) ) %>%
+  select(QTL, locus, PP.H4.abf, type, QTL_Gene) %>%
+  group_by(QTL, locus, type, QTL_Gene) %>%
+  # for sQTLs - show best PP4
+  summarise(PP.H4.abf = max(PP.H4.abf) ) %>%
+  left_join(all) %>%
+  mutate(h4 = signif(PP.H4.abf, digits = 2)) %>%
+  # throw out PP4 less than 0.1
+  mutate(h4 = ifelse(h4 < 0.1, NA, h4) )
+  
+  
+  to_plot %>%
+  ggplot(aes(y = QTL_Gene, x = GWAS)) + 
+  geom_point(aes( colour = QTL,
+    shape = type, 
+    size = PP.H4.abf, 
+    alpha = PP.H4.abf), 
+    position = position_nudge(x = -0.25)) + 
+  geom_text(aes(label = h4), nudge_x = 0.25, hjust = 0.5) +
+  facet_grid(QTL_Gene ~ type, scales = "free",space = "free" ) +
+  theme_bw() +
+    theme(strip.text.y = element_text(angle = 0, colour = "black", hjust = 0.5, face = "bold"), 
+          strip.text.x = element_text(angle = 0, colour = "black", face = "bold"), 
+          axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"), 
+          axis.text.y = element_text(face = "italic", colour = "black"),
+          strip.background = element_blank(), 
+          legend.position = "top",
+          legend.box.margin = margin(c(0,0,0,0)), 
+          legend.margin = margin(c(0,0,0,0)),
+          strip.placement = "outside",
+          panel.spacing.y = unit(x = 0,units = "points"), panel.border = element_rect(fill = NA, size = 0.2, colour = "black"), 
+          panel.spacing.x = unit(x = 0,units = "points"),
+          panel.grid = element_blank(),
+          axis.ticks = element_line(colour = "black")
+          ) +
+    scale_size_continuous(limits = c(0,1)) +
+    scale_alpha_continuous(limits = c(0,1)) +
+    guides(size = "none", alpha = "none") +
+    scale_x_discrete(position = "bottom") +
+    labs(x = "", y = "") + scale_colour_viridis_d() #+ scale_colour_manual() #, title = disease_title , subtitle = paste0(gwas_subtitle, "; min H4 = ", min_h4)  )
+}
+```
+
+
+```{r}
+#coloc_res <- here::here("../Answer_ALS/COLOC/all_COLOC_results_merged_H4_0_no_LD.tsv.gz")
+#ld_res <-  here::here("../Answer_ALS/COLOC/all_COLOC_results_merged_H4_0.5_with_LD.tsv.gz")
+
+#coloc_res <- "../COLOC/tensorQTL/all_COLOC_results_merged_H4_0_no_LD.tsv.gz"
+#ld_res <- "../COLOC/tensorQTL/all_COLOC_results_merged_H4_0.5_with_LD.tsv.gz"
+
+coloc_res <- here::here("COLOC/mmQTL/v5/all_COLOC_results_merged_H4_0_no_LD.tsv.gz")
+ld_res <- here::here("COLOC/mmQTL/v5/all_COLOC_results_merged_H4_0.5_with_LD.tsv.gz")
+
+#roussos_coloc_res <- here::here("COLOC/mmQTL/roussos_microglia_caQTL_coloc_0_no_LD.tsv.gz")
+#roussos_ld_res <- here::here("COLOC/mmQTL/roussos_microglia_caQTL_coloc_0.5_with_LD.tsv.gz")
+#coloc_res <- here::here("mmQTL/v2/all_COLOC_results_merged_H4_0_no_LD.tsv.gz")
+
+all_coloc <- prep_coloc(coloc_res, ld_res)
+#roussos_coloc <- prep_coloc(roussos_coloc_res, roussos_ld_res)
+
+#all_coloc <- bind_rows(all_coloc, roussos_coloc)
+
+
+all_coloc <- mutate(all_coloc, disease = case_when(
+  GWAS %in% c("Jansen_2018" , "Kunkle_2019", "Marioni_2018", "Bellenguez_2021", "Lambert_2013") ~ "AD",
+  GWAS == "Nalls23andMe_2019" ~ "PD",
+  GWAS == "VanRheenenEUR_2021" ~ "ALS",
+  GWAS == "TrubetskoyEUR_2022" ~ "SCZ"
+))
+
+## add P-values for Lambert
+lambert <- readxl::read_excel("../GWAS/Lambert_2019_AD_GWAS_no_overlap.xlsx") %>% 
+  mutate(locus = `Closest gene`) %>%
+  select(locus, GWAS_P = P) %>%
+  mutate(GWAS = "Lambert_2013")
+
+all_coloc$GWAS_P[ all_coloc$GWAS == "Lambert_2013"] <- lambert$GWAS_P[ match(all_coloc[ all_coloc$GWAS == "Lambert_2013",]$locus, lambert$locus) ]
+
+all_coloc <- distinct(all_coloc)
+
+
+ad_coloc <- filter(all_coloc, disease == "AD" & PP.H4.abf > 0.5 & distance_filter == "PASS")
+pd_coloc <- filter(all_coloc, disease == "PD" & PP.H4.abf > 0.5 & distance_filter == "PASS")
+als_coloc <- filter(all_coloc, disease == "ALS" & PP.H4.abf > 0.5 & distance_filter == "PASS")
+scz_coloc <- filter(all_coloc, disease == "SCZ" & PP.H4.abf > 0.5 & distance_filter == "PASS")
+
+```
+
+
+## match gene to feature 
+## iterate through different metadata until you find a match
+
+```{r}
+## add genes
+gene_meta_list <- list(
+    "mmQTL/v4/GENCODE_expression/phenotype_metadata.tsv",
+    "mmQTL/v4/union_expression/phenotype_metadata.tsv"
+)
+
+names(gene_meta_list) <- c("GENCODE_expression", "union_expression")
+
+gene_meta <- map(gene_meta_list, ~{
+  read_tsv(.x, col_names = c("chr", "start", "end", "feature") ) %>% select(feature) %>% mutate(gene = feature)
+})
+
+lc_meta_list <- list(
+  "mmQTL/v4/GENCODE_leafcutter/gencode_v38_leafcutter_junction_metadata.tsv.gz",
+  "mmQTL/v4/union_leafcutter/gencode_novel_leafcutter_junction_metadata.tsv.gz"
+)
+names(lc_meta_list) <- c("GENCODE_leafcutter", "union_leafcutter")
+
+# caQTLs
+
+ca_meta <- read_csv(here::here("external/Rousso_caQTLs/PeakInfoDetailed_RK_11_25_20.csv.gz")) %>%
+  select(feature = PeakID, gene = Associated.Gene.Name)
+ca_meta <- list(Roussos_microglia_caQTL = ca_meta)
+
+# SUPPA - when ready 
+suppa_meta_list <- list(
+    "mmQTL/v4/GENCODE_SUPPA_RI/phenotype_metadata.tsv",
+    "mmQTL/v4/union_SUPPA_RI/phenotype_metadata.tsv",
+    "mmQTL/v4/GENCODE_SUPPA_AF/phenotype_metadata.tsv",
+    "mmQTL/v4/union_SUPPA_AF/phenotype_metadata.tsv",
+    "mmQTL/v4/GENCODE_SUPPA_AL/phenotype_metadata.tsv",
+    "mmQTL/v4/union_SUPPA_AL/phenotype_metadata.tsv",
+    "mmQTL/v4/GENCODE_SUPPA_SE/phenotype_metadata.tsv",
+    "mmQTL/v4/union_SUPPA_SE/phenotype_metadata.tsv",
+    "mmQTL/v4/GENCODE_SUPPA_A5/phenotype_metadata.tsv",
+    "mmQTL/v4/union_SUPPA_A5/phenotype_metadata.tsv",
+    "mmQTL/v4/GENCODE_SUPPA_A3/phenotype_metadata.tsv",
+    "mmQTL/v4/union_SUPPA_A3/phenotype_metadata.tsv"
+)
+file.exists(unlist(suppa_meta_list))
+
+names(suppa_meta_list) <- c("GENCODE_SUPPA_RI", "union_SUPPA_RI", "GENCODE_SUPPA_AF", "union_SUPPA_AF","GENCODE_SUPPA_AL", 
+                            "union_SUPPA_AL","GENCODE_SUPPA_SE", "union_SUPPA_SE",
+                            "GENCODE_SUPPA_A5", "union_SUPPA_A5","GENCODE_SUPPA_A3", "union_SUPPA_A3"
+                            )
+
+tx_meta_list <- list(
+  "mmQTL/v3/GENCODE_transcript/phenotype_metadata.tsv",
+  "mmQTL/v3/union_transcript/phenotype_metadata.tsv"
+)
+
+names(tx_meta_list) <- c("GENCODE_transcript", "union_transcript")
+
+lc_meta <- map(lc_meta_list, ~{read_tsv(.x) %>% select(feature,gene) })
+# 
+
+suppa_meta <- map(suppa_meta_list, ~{
+  read_tsv(.x, col_names = c("chr", "start", "end", "feature") ) %>%
+    mutate(gene = gsub(":.*$", "", feature) ) %>%
+    mutate(gene = gsub("_and_", "\\+", gene)) %>%
+    select(feature, gene)
+  })
+
+tx_meta <- map(tx_meta_list, ~{ read_tsv(.x, col_names = c("chr", "start", "end", "feature", "gene") ) %>%
+    select(feature,gene)})
+
+
+all_meta <- map_df( c(gene_meta, lc_meta,tx_meta, ca_meta,
+                      suppa_meta
+                      ), ~{.x}, .id = "set")
+
+all_coloc$QTL <- gsub("mmQTL_", "", all_coloc$QTL)
+
+all_coloc <- inner_join(all_meta, all_coloc, by = c("feature", "set" = "QTL") )
+
+```
+
+
+
+```{r}
+gene_meta <- read_tsv("~/GENCODE/gencode.v38.primary_assembly.tx2gene.tsv.gz") %>%
+  select(-transcript_id) %>% distinct()
+
+all_coloc <- 
+  all_coloc %>%
+  left_join(gene_meta, by = c("gene" = "gene_id")) %>%
+  mutate(gene_name = coalesce(gene_name, gene)) %>%
+  mutate(reference = gsub("_.*", "", set)) %>%
+  mutate(set = gsub(".*_", "", set)) %>%
+  select(set, reference, everything() )
+
+# rename Bellenguez SPDYE3 locus to PILRA - same locus!
+all_coloc$locus <- gsub("SPDYE3", "PILRA", all_coloc$locus)
+all_coloc <- filter(all_coloc, locus != "ICA1") # UMAD1 and ICA1 loci are giving same colocalisations
+## fix fusion and other weird names
+fusion_meta <- filter(all_coloc, grepl("\\+ENS|_ENS", gene_name ), PP.H4.abf > 0.1 )
+
+
+fusion_meta$fusion_gene_id <- 
+  map_chr(str_split(fusion_meta$gene_name, "\\+" ), ~{
+    split <- map_chr( str_split(.x, "_"), ~{
+      paste(gene_meta$gene_name[ match(.x, gene_meta$gene_id)], collapse = "_") 
+    })
+    paste(split, collapse = "+")
+  })
+  
+all_coloc$fusion_name <- fusion_meta$fusion_gene_id[match(all_coloc$gene_name, fusion_meta$gene_name)]
+
+all_coloc$gene_name <- coalesce(all_coloc$fusion_name, all_coloc$gene_name )
+
+all_coloc <- mutate(all_coloc, set_label = case_when(
+  set == "RI" ~ "intron retention",
+  set == "SE" ~ "exon skipping",
+  set == "AF" ~ "alternate first exon",
+  set == "AL" ~ "alternate last exon",
+  set == "A3" ~ "alternate 3' splice",
+  set == "A5" ~ "alternate 5' splice",
+  set == "leafcutter" ~ "junction usage",
+  set == "transcript" ~ "transcript usage",
+  set == "expression" ~ "gene expression",
+  set == "caQTL" ~ "chromatin accessibility",
+  TRUE ~ set
+)) %>%
+  mutate(reference = case_when(
+    reference == "union" ~ "GENCODE+Novel",
+    reference == "Roussos" ~ "Kosoy et al",
+    reference == "GENCODE" ~ "GENCODE"
+  ))
+
+all_coloc <- filter(all_coloc, locus != "UNC5CL") # duplicate TREM2 locus
+
+# for supplementary
+all_coloc_table <- all_coloc %>%
+  filter(disease %in% c("AD", "PD"), set_label != "chromatin accessibility") %>%
+  filter(PP.H4.abf > 0.1) %>%
+  select(-fusion_name, -coloc) %>%
+    mutate(ensembl_id = gene_meta$gene_id[match(gene_name, gene_meta$gene_name)]) %>%
+  select(disease, GWAS,locus, GWAS_SNP, GWAS_P, GWAS_chr, GWAS_pos, set_label, reference, feature, gene_name, ensembl_id, QTL_junction, QTL_SNP, QTL_Beta, QTL_SE, QTL_MAF, QTL_chr, QTL_pos, GWAS_SNP_Beta, GWAS_SNP_SE,
+         nsnps, PP.H0.abf, PP.H1.abf, PP.H2.abf, PP.H3.abf, PP.H4.abf, LD, SNP_distance, distance_filter) %>%
+  mutate(QTL_junction = ifelse(set_label == "junction usage", QTL_junction, NA)) %>%
+  arrange(disease, locus, desc(PP.H4.abf))
+
+write_tsv(all_coloc_table, here::here("tables/all_coloc_results_annotated.tsv") )
+```
+
+
+Create separate plots focussed on expression (caQTLs/eQTLs) or splicing (all the sQTLs)
+
+```{r}
+
+
+# gencode_splicing_hits <- filter(all_coloc, PP.H4.abf > 0.8, distance_filter == "PASS", reference == "GENCODE") %>%
+#     filter( !set_label %in% c("chromatin accessibility", "gene expression")) 
+# 
+# isoseq_splicing_hits <- filter(all_coloc, PP.H4.abf > 0.8, distance_filter == "PASS", reference == "GENCODE+Novel") %>%
+#     filter( !set_label %in% c("chromatin accessibility", "gene expression")) 
+# 
+# 
+# expression_hits <-  filter(all_coloc, PP.H4.abf > 0.8, distance_filter == "PASS") %>%
+#     filter( set_label %in% c("chromatin accessibility", "gene expression")) 
+# 
+# classic_hits <-  filter(all_coloc, PP.H4.abf > 0.8, distance_filter == "PASS") %>%
+#     filter( set_label %in% c("chromatin accessibility", "gene expression", "junction usage"), reference != "GENCODE+Novel" ) 
+# 
+# all_hits <-  filter(all_coloc, PP.H4.abf > 0.8, distance_filter == "PASS") 
+
+
+best_per_locus <-
+    all_coloc %>%
+    filter(distance_filter == "PASS") %>% #,  GWAS == "Lambert_2013") %>%
+    group_by(disease, locus, gene_name, set, reference) %>%
+    summarise( PP.H4.abf = max(PP.H4.abf)) %>%
+    left_join(all_coloc) %>%
+    select( set_label, reference, disease, GWAS, locus, gene_name, GWAS_SNP, QTL_SNP, QTL_Gene, QTL_Ensembl, QTL_junction, PP.H4.abf, QTL_P, GWAS_P, SNP_distance, LD, GWAS_SNP_Beta) %>%
+    distinct() #%>%
+    #filter( !set %in% c("caQTL"))# , "expression")) 
+
+phenotype_labels <- c("chromatin accessibility", "gene expression", "junction usage", "transcript usage", "exon skipping", "intron retention","alternate 3' splice","alternate 5' splice", "alternate first exon", "alternate last exon")
+super_label <- c("chromatin", "expression", rep("splicing", 8))
+
+bubble_plot <- function(data, hits, mydisease = "AD", caQTL = FALSE, sets = "all", ref = "all", loci = NULL, text = TRUE){
+  
+  to_plot <- data %>%
+      filter(paste(disease, GWAS, locus, gene_name) %in% paste(hits$disease, hits$GWAS, hits$locus, hits$gene_name), disease == mydisease ) %>%
+     mutate(h4 = round(PP.H4.abf, digits = 2)) %>%
+  mutate(set_label = factor(set_label, levels = phenotype_labels))
+  if(sets == "splicing"){
+    to_plot <- filter(to_plot, !set %in% c("caQTL", "expression") )
+  }
+  if( sets == "expression"){
+    to_plot <- filter(to_plot, set %in% c("caQTL", "expression") )
+  }
+  
+  if(caQTL == FALSE){
+    to_plot <- filter(to_plot, set != "caQTL")
+  }
+  
+  if(ref != "all"){
+    to_plot <- filter(to_plot, reference %in% ref)
+  }
+  
+  if( sets == "classic"){
+    to_plot <- filter(to_plot, set %in% c("caQTL", "expression", "leafcutter"), reference != "GENCODE+Novel")
+  }
+  if(!is.null(loci) ){
+    to_plot <- filter(to_plot, locus %in% loci)
+  }
+  plot <- 
+    to_plot %>%
+    mutate(h4 = ifelse(h4 >= 0.5, as.character(h4), "")) %>% # don't plot text values < 0.5
+  # throw out PP4 less than 0.1
+  #mutate(h4 = ifelse(h4 < 0.1, NA, h4) ) %>%
+  ggplot(aes(x = reference, y = gene_name )) + 
+  #ggplot(aes(y = reference, x = gene_name)) +
+  geom_point(aes(colour = reference, alpha = PP.H4.abf, size = 0.5*PP.H4.abf), position = position_nudge(x = 0.25) ) +
+  facet_grid(locus ~ set_label, switch = "y",
+  #facet_grid(set_label ~ locus,
+      scales = "free",space = "free", # fix tomorrow
+             labeller = labeller(set_label = label_wrap_gen(width = 11)) ) +
+  theme_bw() +
+    theme(strip.text.y.left = element_text(angle = 0, colour = "black", hjust = 0.5), 
+          strip.text.x = element_text(angle = 0, colour = "black"), 
+          axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"), 
+          axis.text.y = element_text(face = "italic", colour = "black"),
+          strip.background = element_blank(), 
+          legend.position = "top",
+          legend.box.margin = margin(c(0,0,0,0)), 
+          legend.margin = margin(c(0,0,0,0)),
+          strip.placement = "outside",
+          panel.spacing.y = unit(x = 0,units = "points"), panel.border = element_rect(fill = NA, size = 0.2, colour = "black"), 
+          panel.spacing.x = unit(x = 0,units = "points"),
+          panel.grid = element_blank(),
+          axis.ticks = element_line(colour = "black")
+          ) +
+    scale_size_continuous(limits = c(0,1)) +
+    scale_alpha_continuous(limits = c(0,1)) +
+    scale_x_discrete(position = "bottom") +
+    scale_y_discrete(position = "right") +
+    labs(x = "", y = "")  + 
+    scale_colour_manual( values = c("GENCODE" = "#FF6319", "GENCODE+Novel" = "#6CBE45", "Kosoy et al" = "#0039A6") ) +
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank() )
+  if(text == TRUE){
+    plot <- plot + geom_text(aes(label = h4), nudge_x = -0.25, size = 3  ) + 
+      guides(size = "none", alpha = "none") 
+  }
+  return(plot)
+  #+ scale_fill_viridis_c()
+
+  
+}
+
+
+# NEW FOR MAIN FIGURES - 
+# summarise sQTLs as number of modalities with PP4 > 0.5
+collapse_plot <- function(input, mydisease, pp_limit = 0.5, min_tally = 0){
+  to_plot <-   
+    best_per_locus %>% 
+    mutate(super_label = super_label[match(set_label, phenotype_labels)]) %>%
+    filter(disease == mydisease, PP.H4.abf > pp_limit) %>% #, locus %in% loci) %>%
+    group_by(disease, locus, gene_name, reference, super_label) %>%
+    tally()
+
+  # apply filters, only plot loci with >1 sQTL coloc
+  loci <- 
+  to_plot %>% group_by(locus, super_label) %>%
+  summarise(tally = sum(n)) %>%
+  filter(super_label == "splicing" & tally > min_tally) %>% pull(locus)
+
+  to_plot %>%
+  filter(locus %in% loci) %>%
+  mutate(gene_name = sub("\\+.*|_.*","\\*", gene_name)) %>% # contract all complex genes
+  mutate(gene_name = sub("ENSG00000127415.13", "IDUA", gene_name)) %>% #fix IDUA gene
+  ggplot(aes(x = reference, y = gene_name )) + 
+  geom_point(aes(colour = reference), size = 3) +
+  geom_text(aes(label = n), colour = "white", size = 7*5/14) +
+  facet_grid(locus ~ super_label, switch = "y",
+  #facet_grid(set_label ~ locus,
+      scales = "free",space = "free", # fix tomorrow
+             labeller = labeller(super_label = label_wrap_gen(width = 11)) ) +
+  theme_jh() +    
+          theme(strip.text.y.left = element_text(angle = 0, colour = "black", hjust = 0.5 ), 
+          strip.text.x = element_text(angle = 0, colour = "black" ), 
+          axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"), 
+          axis.text.y = element_text(face = "italic", colour = "black"),
+          strip.background = element_blank(), 
+          legend.position = "top",
+          legend.box.margin = margin(c(0,0,0,0)), 
+          legend.margin = margin(c(0,0,0,0)),
+          strip.placement = "outside",
+          panel.spacing.y = unit(x = 0,units = "points"), 
+          panel.border = element_rect(fill = NA, size = 0.2, colour = "black"), 
+          panel.spacing.x = unit(x = 5,units = "points"),
+          panel.grid = element_blank(),
+          axis.ticks = element_line(colour = "black")
+          ) +
+    scale_size_continuous(limits = c(0,1)) +
+    scale_alpha_continuous(limits = c(0,1)) +
+    scale_x_discrete(position = "bottom") +
+    scale_y_discrete(position = "right") +
+    labs(x = "", y = "")  + 
+    scale_colour_manual( values = c("GENCODE" = "#FF6319", "GENCODE+Novel" = "#6CBE45", "Kosoy et al" = "#0039A6") ) +
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank() ) +
+    guides(colour = "none")
+}
+
+ad_collapse_plot <- collapse_plot(best_per_locus, "AD", pp_limit = 0.9) # 21 genes / # 26 with no filtering
+pd_collapse_plot <- collapse_plot(best_per_locus, "PD", pp_limit = 0.9) # 10 genes / 13 genes with no filtering
+
+ggsave(plot = ad_collapse_plot,filename = here::here("plots/AD_coloc_collapse.pdf"), width = 55, height = 90, units = "mm") 
+ggsave(plot = pd_collapse_plot,filename = here::here("plots/PD_coloc_collapse.pdf"), width = 45, height = 50, units = "mm") 
+
+```
+
+For main figures, show all loci/genes with at least 1 sQTL colocalaziations.
+
+Summarise best PP4 for expression and splicing across QTLs and references
+Plot against each other
+
+```{r}
+max_pp4_plot <- function(mydisease, mytitle = NA){
+  to_plot <-   
+    best_per_locus %>% 
+    mutate(super_label = super_label[match(set_label, phenotype_labels)]) %>%
+    filter(disease == mydisease) %>% #, PP.H4.abf > pp_limit) %>% #, locus %in% loci) %>%
+    group_by(disease, locus, super_label) %>%
+    summarise( PP4 = max(PP.H4.abf) ) %>%
+   pivot_wider(names_from = super_label, values_from = PP4, values_fill = -0.1) %>%
+   #filter(reference == "GENCODE") %>%
+   filter(expression > 0.5 | splicing > 0.5) %>%
+    mutate(locus = ifelse( expression > 0.9 | splicing > 0.9, locus, "") ) #, values_fill = 0)
+to_plot %>%
+  ggplot(aes(x = expression, y = splicing) ) + 
+   # geom_point(aes(colour = log2(expression / splicing) )) + 
+  ggrepel::geom_text_repel(
+    #data = filter(to_plot, expression > 0.9 | splicing > 0.9),
+   #min.segment.length = unit(0, "lines"), 
+   size = 4*5/14,max.iter = 1e8,
+   box.padding = unit(0.05,"lines"), 
+   max.overlaps = Inf, 
+   max.time = 2, 
+    aes(label = locus)) +
+  geom_point(aes(colour = log2(expression / splicing) ), size = 0.5) + 
+  #geom_line(aes(group = locus), linetype = 3) + 
+  theme_jh() +
+  scale_colour_viridis_c(limits = c(-4.5,4)) +
+  labs(x = "Expression max PP4", y = "Splicing max PP4", colour = expression(log[2]~over("expression PP4", "splicing PP4")) ) +
+  theme(legend.text = element_text(size = 5), 
+        legend.title = element_text(size = 5), 
+        legend.key.size = unit(0.5, "lines"), 
+        legend.justification = "center",
+        legend.position = c(0.25, 0.25), legend.key.height = unit(0.5, "lines")) +
+  scale_x_continuous(limits = c(0,1.05), breaks = c(0,0.5,1)) +
+  scale_y_continuous(limits = c(0,1.05), breaks = c(0,0.5,1)) 
+}
+
+pp4_multiplot <- 
+  max_pp4_plot("AD", "Alzheimer's disease") +
+  max_pp4_plot("PD", "Parkinson's disease") +
+  plot_layout(ncol = 2)
+
+ggsave(plot = pp4_multiplot,filename = "plots/pp4_multiplot_ad_pd.pdf", width = 100, height = 40, units = "mm")
+  #facet_wrap(~reference)
+
+ggsave(plot = max_pp4_plot("AD", "Alzheimer's disease"),filename = "plots/pp4_plot_ad.pdf", width = 50, height = 40, units = "mm")
+
+ggsave(plot = max_pp4_plot("PD", "Alzheimer's disease"),filename = "plots/pp4_plot_pd.pdf", width = 50, height = 40, units = "mm")
+
+```
+
+
+```{r}
+
+splicing_hits <- filter(all_coloc, PP.H4.abf > 0.8, distance_filter == "PASS") %>%
+    filter( !set_label %in% c("chromatin accessibility", "gene expression")) 
+
+# AD splicing loci of interest
+ad_splicing_loci <- c("ABI3", "ACE", "CD33", "CTSH", "DOC2A", "EPDR1", "GRN", "IDUA", "KAT8", "LILRB2", "MINDY2", "MS4A6A", "PICALM", "PILRA", "PLCG2", "PRKD3", "SCIMP", "SPI1", "TMEM106B", "TREM2", "WDR81")
+
+ad_splicing_hits <- filter(all_coloc, PP.H4.abf > 0.8, distance_filter == "PASS") %>%
+  filter( !set_label %in% c("chromatin accessibility", "gene expression")) %>%
+  filter(locus %in% ad_splicing_loci)
+
+pd_splicing_loci <- c("BST1", "C5orf24", "CD19", "DNAH17", "FAM49B", "FGF20", "KPNA1", "KRTCAP2", "NUCKS1", "RETREG3", "SIPA1L2", "SPTSSB")
+
+pd_splicing_hits <- filter(all_coloc, PP.H4.abf > 0.8, distance_filter == "PASS") %>%
+  filter( !set_label %in% c("chromatin accessibility", "gene expression")) %>%
+  filter(locus %in% pd_splicing_loci)
+
+
+
+ad_splicing_plot <- bubble_plot(best_per_locus, ad_splicing_hits, mydisease = "AD", caQTL = TRUE, text = FALSE)
+pd_splicing_plot <- bubble_plot(best_per_locus, pd_splicing_hits, mydisease = "PD", caQTL = TRUE, text = FALSE)
+
+
+ad_pd_main_plot <- 
+  ad_splicing_plot + pd_splicing_plot + 
+  plot_layout(ncol = 1, guides = "collect", heights = c(1.1*length(ad_splicing_loci), length(pd_splicing_loci))) &
+  theme(legend.position = "bottom")
+
+ggsave(plot = ad_pd_main_plot, filename = here::here("plots/AD_PD_coloc_splicing_select_loci.pdf"), width = 11, height = 10, dpi = 600) 
+```
+
+
+Plot PP4s for expression against splicing
+
+
+```{r}
+
+```
+
+
+
+
+# Main Figure COLOC plots - focus on individual interesting loci
+
+PLCG2
+
+```{r}
+## FOR MAIN FIGURE JUST SHOW PLCG2 and SIPA1L2
+ad_splicing_loci <- c( "PLCG2" )
+
+ad_splicing_hits <- filter(all_coloc, PP.H4.abf > 0.6, distance_filter == "PASS") %>%
+ # filter( !set_label %in% c("chromatin accessibility", "gene expression")) %>%
+  filter(locus %in% ad_splicing_loci)
+
+
+plcg2_bubbles <- bubble_plot(filter(best_per_locus, locus == "PLCG2", PP.H4.abf > 0.6), ad_splicing_hits, mydisease = "AD", caQTL = TRUE, text = TRUE ) + guides(colour = "none") 
+
+ggsave(plot = plcg2_bubbles, filename = "plots/PLCG2_bubble_plot.pdf", width = 8, height = 2)
+
+## CD33
+
+ad_splicing_loci <- c( "CD33" )
+
+ad_splicing_hits <- filter(all_coloc, PP.H4.abf > 0.6, distance_filter == "PASS") %>%
+ # filter( !set_label %in% c("chromatin accessibility", "gene expression")) %>%
+  filter(locus %in% ad_splicing_loci)
+
+
+CD33_bubbles <- bubble_plot(filter(best_per_locus, locus == "CD33", PP.H4.abf > 0.6), ad_splicing_hits, mydisease = "AD", caQTL = TRUE, text = TRUE ) + guides(colour = "none") 
+
+ggsave(plot = CD33_bubbles, filename = "plots/CD33_bubble_plot.pdf", width = 8, height = 2)
+
+
+
+## SIPA1L2
+pd_splicing_loci <- c( "SIPA1L2" )
+
+pd_splicing_hits <- filter(all_coloc, PP.H4.abf > 0.8, distance_filter == "PASS") %>%
+  filter( !set_label %in% c("chromatin accessibility", "gene expression")) %>%
+  filter(locus %in% pd_splicing_loci) %>%
+  filter(!set_labe)
+
+
+sipa_bubbles <- bubble_plot(best_per_locus, pd_splicing_hits, mydisease = "PD", caQTL = TRUE, text = TRUE)
+
+ggsave(plot = sipa_bubbles, filename = "plots/SIPA1L2_bubble_plot.pdf", width = 8, height = 2)
+
+```
+
+
+
+A bunch of different kinds of QTLs but each type has a different way of matching the feature to its gene.
+
+Including the Lambert 2013 GWAS also gets CD33, which is missing from Bellenguez for some reason. 
+
+CD33 colocalises with leafcutter junction QTLs for exon 1-exon2, as well as transcript QTLs for both GENCODE and isoseq references.
+However the isoseq references suggest the QTL is in a fusion gene transcript, whereas the GENCODE reference uses the regular transcript.
+
+
+AD - 18 loci out of 78 have evidence of colocalisation with changes in splicing at PP4 >= 0.8
+
+
+PD - FAM49B is now called CYRIB, lots of strong splicing colocalisation.
+
+RAB29 is colocalised in NUCKS1 locus 
+https://pubmed.ncbi.nlm.nih.gov/29212815/ - RAB29 is regulator of LRRK2
+
+KPNA1
+BST1  - multiple modalities of sQTL
+CYRIB/FAM49B - same
+SIPA1L2 - same
+
+
+
+Count number of loci colocalisations per GWAS
+
+```{r}
+n_loci <-
+  all_coloc %>%
+  select(disease, locus) %>%
+  distinct() %>%
+  group_by(disease) %>%
+  summarise( n_loci = n() ) %>%
+  left_join(
+    tibble(disease = c("AD", "PD", "SCZ", "ALS"), disease_label = c("Alzheimer's disease", "Parkinson's disease", "Schizophrenia", "Amyotrophic Lateral Sclerosis")),
+    by = "disease") %>%
+  mutate(disease_label = paste0(disease_label, " (", n_loci," loci)"))
+
+
+set_levels <- c("chromatin", "expression", "leafcutter", "transcript", "A3", "A5", "AF", "AL", "RI", "SE")
+super_label <- c("chromatin", "expression", rep("splicing", 8))
+#A3         A5         AF         AL      caQTL expression leafcutter         RI         SE transcript 
+qtl_levels <- c("Kosoy et al", "GENCODE", "GENCODE+Novel")
+
+
+# plot the number of loci in each disease with at least one colocalisation at a given PP4
+locus_ratio_plot <- function(input, return_table = FALSE, diseases = c("AD", "PD"), groupby = "set"){
+  to_plot <-
+    input  %>%
+    filter( QTL_P < 0.05) %>%
+    filter(disease %in% diseases)
+  
+  print(groupby)
+  if( groupby == "super"){
+    to_plot <- to_plot %>%
+      mutate(set_label = super_label[match(set_label, phenotype_labels)])
+  }
+  
+  to_plot <- to_plot %>%
+    group_by( disease,locus, set_label, reference) %>%
+    summarise( PP.H4.abf = max(PP.H4.abf)) %>%
+    group_by( disease, set_label, reference) %>%
+    summarise(
+      h4_0.5 = sum(PP.H4.abf >= 0.5 & PP.H4.abf < 0.7),
+      h4_0.8 = sum(PP.H4.abf >= 0.7 & PP.H4.abf < 0.9),
+      h4_0.9 = sum(PP.H4.abf >= 0.9),
+      total = sum(PP.H4.abf >= 0.5)
+    ) %>%
+    gather( key = "h4_bin", value = "n_h4", -disease, -set_label, -reference) %>%
+    left_join(n_loci, by = "disease") %>%
+    mutate( prop_h4 = n_h4 / n_loci) %>%
+    ungroup() %>%
+    mutate(reference = factor(reference, levels = (qtl_levels)))
+
+  if(groupby == "set"){
+    to_plot <- to_plot %>%
+      mutate(set_label = factor(set_label, levels = rev(phenotype_labels)) )
+  }
+  if(groupby == "super"){
+        to_plot <- to_plot %>%
+      mutate(set_label = factor(set_label, levels = c("chromatin", "expression", "splicing") ) )
+  }
+  
+  if(return_table == TRUE){
+    df <- to_plot %>%
+      select(disease, set_label, reference, h4_bin, n_h4, n_loci) %>%
+      spread(key = h4_bin, value = n_h4) %>%
+      knitr::kable()
+    return(df)
+  }
+  
+  totals <- filter(to_plot, h4_bin == "total")
+  to_plot <- filter(to_plot, h4_bin != "total")
+  to_plot %>%
+  ggplot(aes(x = set_label)) +
+  #geom_col(aes(y = n_loci), fill = "white") +
+  geom_col(aes(y = n_h4, alpha = h4_bin, fill = reference) ) +
+  facet_grid(reference~disease_label, labeller = labeller(disease_label = label_wrap_gen(width = 11)), 
+             scales = "free", space = "free_y") +
+  coord_flip() +
+  theme_jh() +
+  theme(legend.text = element_text(size = 5), 
+        legend.title = element_text(size = 5), 
+        legend.key.size = unit(2, 'mm'), 
+        panel.border = element_blank(),
+        panel.background = element_blank() ) +
+  scale_alpha_manual( values = c(0.3,0.6,1), labels = c("[0.5, 0.7]", "[0.7, 0.9]", "[0.9, 1]")) +
+  theme(strip.text.y = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), #panel
+        #strip.text.y = element_text(angle = 0, face = "bold",vjust = 1),strip.placement = "inside",
+        legend.position = c("top"),
+        legend.direction = "horizontal",
+        legend.box = "vertical", 
+        legend.box.just = "right", # legend.key.size = unit(0.01,units = "npc"),
+          strip.background = element_blank() ) +
+    scale_y_continuous(expand = c(0,0), limits = c(0,40)) +
+    scale_x_discrete(limits = rev) +
+  #scale_y_continuous(labels = scales::percent_format(accuracy = 1),  expand = c(0,0), limits = c(0,0.55)) +
+  labs(alpha = "COLOC PP4", fill = "QTL type", x = "", y = "Number of loci with at least 1 colocalization") +
+  theme(panel.spacing.x = unit(2, "lines")) +
+  theme(axis.text = element_text(colour = "black")) +
+  #geom_text(data = disease_labels, aes(label = disease_label), x = 6.5, y = 0.5 ) #+
+  scale_fill_manual(values = c("GENCODE" = "#FF6319", "GENCODE+Novel" = "#6CBE45", "Kosoy et al" = "#0039A6"), limits = rev) +
+  geom_hline(yintercept = 0, size = 1) +
+  geom_text(data = totals, aes(label = n_h4, y = n_h4), alpha = 1, colour = "black", nudge_y = 2, size = 5*5/14) 
+}
+
+locus_ratio_plot(best_per_locus, diseases = "AD", return_table = TRUE, groupby = "super")
+
+#p <- locus_ratio_plot(best_per_locus, diseases = "AD") 
+
+p_super <- locus_ratio_plot(best_per_locus, diseases = "AD", groupby = "super") + 
+  locus_ratio_plot(best_per_locus, diseases = "PD", groupby = "super") +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "top")
+
+ggsave(plot = p_super, filename = here::here("plots/AD_loci_coloc_numbers_super.pdf"), width = 100, height = 45, units = "mm")
+
+p_set <- locus_ratio_plot(best_per_locus, diseases = "AD", groupby = "set") + 
+  locus_ratio_plot(best_per_locus, diseases = "PD", groupby = "set") +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "top")
+
+
+ggsave(plot = p_set, filename = here::here("plots/PD_loci_coloc_numbers.png"), width = 5, height = 6, dpi = 600)
+
+
+#ggsave(plot = p_super, filename = here::here("plots/AD_PD_loci_coloc_numbers_by_super.pdf"), width = 10, height = 3, dpi = 600)
+
+ggsave(plot = p_set, filename = here::here("plots/AD_PD_loci_coloc_numbers_by_set.png"), width = 10, height = 6, dpi = 600)
+
+
+```
+
+
+
+
+```{r}
+
+# all_coloc %>% filter(locus == "MS4A6A", PP.H4.abf > 0.5) %>% View()
+# 
+# all_coloc %>% filter(PP.H4.abf > 0.5) %>% group_by(QTL,locus) %>% summarise( PP4 = max(PP.H4.abf)) %>% group_by(QTL ) %>% tally() # %>% tally()
+#   
+#   ggplot(aes(x = QTL, y = locus, fill = PP4)) + geom_tile() +
+#   ggeasy::easy_rotate_x_labels()
+#   #pivot_wider(names_from = QTL, values_from = PP4) %>% View()
+# 
+# all_coloc %>% filter( grepl("transcript", all_coloc$QTL) )  %>%
+#   select(locus, feature, QTL, PP4 = PP.H4.abf) %>%
+#   pivot_wider(names_from = QTL, values_from = PP4) %>%
+#   ggplot(aes(x = mmQTL_GENCODE_transcript, y = mmQTL_isoseq_transcript)) + geom_point() +
+#   
+  
+```
+
+
+<!-- ```{r} -->
+<!-- tuqtl_coloc <-  filter(all_coloc, QTL == "mmQTL_isoseq_transcripts")  -->
+
+<!-- all_coloc <-  filter(all_coloc, QTL != "mmQTL_isoseq_transcripts")  -->
+
+
+<!-- gene_meta <- read_tsv("~/GENCODE/gencode.v38.primary_assembly.tx2gene.tsv.gz") -->
+
+<!-- tx_meta <- read_tsv(here::here("data/post_filter/isoseq_transcript_pheno_matrix.tsv")) -->
+
+
+<!-- all_coloc$QTL_Ensembl <- gsub("\\.[0-9]+$", "", all_coloc$QTL_Ensembl) -->
+<!-- all_coloc$QTL_Gene <- gsub("\\.[0-9]+$", "", all_coloc$QTL_Gene) -->
+<!-- gene_meta$gene_id <- gsub("\\.[0-9]+$", "", gene_meta$gene_id) -->
+
+<!-- all_coloc$updated_gene <- gene_meta$gene_name[ match(all_coloc$QTL_Ensembl, gene_meta$gene_id)] -->
+<!-- all_coloc$updated_id <- gene_meta$gene_name[ match(all_coloc$QTL_Gene, gene_meta$gene_id)] -->
+<!-- all_coloc$QTL_Gene <- coalesce(all_coloc$updated_id, all_coloc$updated_gene, all_coloc$QTL_Gene) -->
+
+<!-- all_coloc <- all_coloc %>% -->
+<!--   mutate(type = case_when(  -->
+<!--     grepl("tensorQTL|mmQTL|Bryois", QTL) ~ "meta",                               -->
+<!--     grepl("gencode", QTL) ~ "GENCODE", -->
+<!--     grepl("isoseq", QTL) ~"IsoSeq" -->
+<!--     )  -->
+<!--   ) -->
+
+
+<!-- all_coloc$cell <- gsub("raj_microglia_", "raj", all_coloc$QTL) -->
+<!-- all_coloc$cell <- str_split_fixed(all_coloc$cell, "_", 4)[,1] -->
+
+<!-- all_coloc <- mutate(all_coloc, cell = case_when( -->
+<!--   grepl("mmQTL", QTL) ~ "mmQTL", -->
+<!--   grepl("tensorQTL", QTL) ~ "tensorQTL", -->
+<!--   TRUE ~ cell -->
+<!-- )) -->
+
+<!-- all_coloc$QTL_Gene <- ifelse(is.na(all_coloc$QTL_Gene), all_coloc$QTL_Ensembl, all_coloc$QTL_Gene) -->
+<!-- all_coloc$disease <- ifelse(is.na(all_coloc$disease), "Bellenguez", all_coloc$disease) -->
+
+<!-- ## meta only -->
+<!-- all_coloc <- filter(all_coloc, type == "meta") -->
+
+<!-- # ditch tu and RI QTLs for now -->
+<!-- all_coloc <- filter(all_coloc, !cell %in% c("mmQTL_GENCODE_transcripts", "mmQTL_isoseq_SUPPA_RI")  ) -->
+
+<!-- all_coloc$cell <- all_coloc$QTL -->
+
+
+
+
+<!-- bellenguez_all <- filter(all_coloc, GWAS == "Bellenguez_2021") -->
+<!-- bellenguez_best <- filter(best_per_locus, GWAS == "Bellenguez_2021") -->
+
+<!-- ad_plot <- make_coloc_plot("AD", min_PP4 = 0.7) -->
+<!-- #b_plot <- make_coloc_plot("Bellenguez", min_PP4 = 0.7, all = bellenguez_all, best = bellenguez_best) -->
+
+<!-- als_plot <- make_coloc_plot("ALS", min_PP4 = 0.5) -->
+<!-- ``` -->
+
+
+
+<!-- Compare meta-analysis colocs -->
+
+<!-- ```{r} -->
+<!-- best_per_locus %>% -->
+<!--   filter(type == "meta", GWAS == "") %>% -->
+<!--   select(locus, QTL_Gene, QTL, PP4 = PP.H4.abf) %>% -->
+<!--   pivot_wider( names_from = QTL, values_from = PP4) %>% -->
+<!--   drop_na() %>% -->
+<!--   ggplot(aes(x =Microglia_mmQTL_GENCODE, y = Microglia_tensorQTL_GENCODE )) + geom_point() + -->
+<!--   xlim(0.5,1) + -->
+<!--   ylim(0.5,1) + -->
+<!--   geom_label(aes(label = QTL_Gene)) -->
+<!-- ``` -->
+
+
+<!-- ## Transcript Usage QTLs -->
+
+<!-- Taking the isoseq transcripts and converting to ratios -->
+
+<!-- ```{r} -->
+<!-- #tuqtl_coloc <-  filter(all_coloc, QTL == "mmQTL_isoseq_transcripts")  -->
+<!-- tuqtl_coloc$QTL_tx <- tuqtl_coloc$QTL_Gene -->
+<!-- tx_meta$group <- gsub("\\.[0-9]+$", "", tx_meta$group) -->
+
+<!-- tuqtl_coloc$QTL_Ensembl <- tx_meta$group[ match(tuqtl_coloc$QTL_tx, tx_meta$feature)] -->
+<!-- tuqtl_coloc$QTL_Gene <- gene_meta$gene_name[match(tuqtl_coloc$QTL_Ensembl, gene_meta$gene_id)] -->
+
+<!-- tuqtl_coloc$QTL_Gene <- coalesce(tuqtl_coloc$QTL_Gene, tuqtl_coloc$QTL_Ensembl  ) -->
+
+<!-- tuqtl_coloc$disease <- ifelse(tuqtl_coloc$GWAS == "Bellenguez_2021", "AD", tuqtl_coloc$disease) -->
+<!-- tuqtl_coloc$cell <- "mmQTL_transcripts" -->
+<!-- tuqtl_coloc$type <- "tuQTL" -->
+
+<!-- write_tsv(tuqtl_coloc, file = "../COLOC/mmQTL/isoseq_transcript_qtl_coloc.tsv") -->
+
+<!-- best_tx_per_locus <- -->
+<!--     tuqtl_coloc %>% -->
+<!--     filter(!is.na(disease)) %>% -->
+<!--     #filter(distance_filter == "PASS") %>% -->
+<!--     #filter( QTL %in% c(cell_type_datasets, microglia_datasets) ) %>%  -->
+<!--     group_by(disease, locus, QTL_tx, type, QTL) %>% -->
+<!--     summarise( PP.H4.abf = max(PP.H4.abf)) %>% -->
+<!--     left_join(tuqtl_coloc) %>% -->
+<!--     select( disease, cell, GWAS, locus, GWAS_SNP, QTL_SNP, QTL_Gene, QTL_Ensembl, QTL_junction, type, QTL, PP.H4.abf, QTL_P, GWAS_P, SNP_distance, LD) %>% -->
+<!--     distinct() -->
+
+<!-- # %>%  -->
+<!--   # filter(disease == "AD") %>% -->
+<!--   # mutate(PP4 = signif(PP.H4.abf, digits = 2)) %>%  -->
+<!--   # filter(PP4 > 0.5) %>% -->
+<!--   # ggplot(aes(x = 1 ,y = QTL_Gene )) + geom_text(aes(label = PP4)) + facet_wrap(~locus, scales = "free") -->
+<!--   #  -->
+
+<!--  make_coloc_plot(mydisease = "AD", all = tuqtl_coloc, best = best_tx_per_locus) -->
+
+
+
+<!-- all_tx <- bind_rows(all_coloc, tuqtl_coloc) -->
+<!-- all_best <- bind_rows(best_per_locus, best_tx_per_locus) -->
+
+<!-- all_tx$type <- ifelse(all_tx$type == "meta", "eQTL", all_tx$type) -->
+<!-- all_best$type <- ifelse(all_best$type == "meta", "eQTL", all_best$type) -->
+
+<!-- make_coloc_plot(mydisease = "AD", all = all_tx, best = all_best) -->
+
+<!-- ``` -->
+
+<!-- ## Bryois single cell -->
+
+<!-- ```{r} -->
+
+<!-- # Bryois single cell -->
+<!-- coloc_res <- here::here("Bryois/all_COLOC_results_merged_H4_0_no_LD.tsv.gz") -->
+<!-- ld_res <- here::here("Bryois/all_COLOC_results_merged_H4_0.5_with_LD.tsv.gz") -->
+
+<!-- gene_meta <- read_tsv("~/GENCODE/gencode.v30.tx2gene.tsv.gz") %>% select(-TXNAME) %>% distinct() -->
+<!-- gene_meta$GENEID <- gsub("\\.[0-9]+", "", gene_meta$GENEID) -->
+
+<!-- all_coloc <- prep_coloc(coloc_res, ld_res) -->
+
+<!-- all_coloc$QTL_Ensembl <- all_coloc$QTL_Gene -->
+<!-- all_coloc$QTL_Gene <- gene_meta$GENENAME[match(all_coloc$QTL_Ensembl, gene_meta$GENEID)] -->
+
+<!-- all_coloc$disease <- ifelse( all_coloc$GWAS == "Bellenguez_2021", "AD", all_coloc$disease) -->
+
+<!-- all_coloc$cell <- gsub("Bryois_", "", all_coloc$QTL) -->
+<!-- all_coloc$type <- "Bryois" -->
+
+<!-- best_per_locus <- -->
+<!--     all_coloc %>% -->
+<!--     filter(distance_filter == "PASS") %>% -->
+<!--     #filter( QTL %in% c(cell_type_datasets, microglia_datasets) ) %>%  -->
+<!--     group_by(disease, locus, QTL_Gene, type, QTL) %>% -->
+<!--     summarise( PP.H4.abf = max(PP.H4.abf)) %>% -->
+<!--     left_join(all_coloc) %>% -->
+<!--     select( cell, disease, GWAS, locus, GWAS_SNP, QTL_SNP, QTL_Gene, QTL_Ensembl, QTL_junction, type, QTL, PP.H4.abf, QTL_P, GWAS_P, SNP_distance, LD) %>% -->
+<!--     distinct() -->
+
+<!-- #ad_plot <-  -->
+<!-- make_coloc_plot(mydisease = "AD", min_PP4 = 0.5) -->
+
+<!-- make_coloc_plot(mydisease = "PD", min_PP4 = 0.7) -->
+<!-- ``` -->
+
+
+
+
+```{r}
+pd_splicing_loci_plot <- bubble_plot(best_per_locus, splicing_hits, mydisease = "PD", sets = "all", caQTL = FALSE, loci = c("BST1", "FAM49B", "SIPA1L2"))
+
+#ggsave(plot = pd_splicing_loci_plot, filename = here::here("plots/PD_gencode_union_coloc_splicing_loci.png"), width = 10, height = 2, dpi = 600)
+# ad_classic_plot <- bubble_plot(best_per_locus, hits =  classic_hits, mydisease = "AD", sets = "classic", caQTL = TRUE)
+# 
+# pd_classic_plot <- bubble_plot(best_per_locus, hits =  classic_hits, mydisease = "PD", sets = "classic", caQTL = TRUE)
+
+# pd_gencode_plot <- bubble_plot(best_per_locus, hits = isoseq_splicing_hits, mydisease = "PD", sets = "splicing", ref = "GENCODE", caQTL = FALSE)
+# 
+# ad_gencode_plot <- bubble_plot(best_per_locus, hits = isoseq_splicing_hits, mydisease = "AD", sets = "all", ref = "GENCODE+Novel", caQTL = FALSE)
+
+als_all_plot <- bubble_plot(best_per_locus, all_hits, mydisease = "ALS", caQTL = TRUE)
+pd_all_plot <- bubble_plot(best_per_locus, all_hits, mydisease = "PD", caQTL = TRUE)
+ad_all_plot <- bubble_plot(best_per_locus, all_hits, mydisease = "AD", caQTL = TRUE)
+scz_all_plot <- bubble_plot(best_per_locus, all_hits, mydisease = "SCZ", caQTL = TRUE)
+
+
+ad_splicing_focussed_plot <- bubble_plot(best_per_locus, splicing_hits, mydisease = "AD", sets = "splicing", caQTL = FALSE)
+ad_splicing_focussed_plot
+
+ad_expression_focussed_plot <- bubble_plot(best_per_locus, expression_hits, mydisease = "AD",caQTL = TRUE, sets = "expression" )
+
+ad_expression_focussed_plot
+
+pd_splicing_focussed_plot <- bubble_plot(best_per_locus, splicing_hits, mydisease = "PD", sets = "splicing")
+pd_expression_focussed_plot <- bubble_plot(best_per_locus, expression_hits, mydisease = "PD",caQTL = TRUE)
+
+
+ad_all_plot <-  bubble_plot(best_per_locus, all_hits, mydisease = "AD",caQTL = TRUE )
+als_all_plot <-  bubble_plot(best_per_locus, all_hits, mydisease = "ALS",caQTL = TRUE )
+
+
+pd_expression_all_plot <-  bubble_plot(best_per_locus, rbind(expression_hits, splicing_hits), mydisease = "PD",caQTL = TRUE, ref = c("GENCODE", "Kosoy et al", "GENCODE+Novel") )
+
+
+ad_splicing_loci_plot <- bubble_plot(best_per_locus, splicing_hits, mydisease = "AD", sets = "all", caQTL = FALSE, loci = c("CD33", "CTSH", "PLCG2", "SIGLEC11", "TREM2"))
+
+ad_splicing_loci_plot
+
+ad_splicing_focussed_plot <- bubble_plot(best_per_locus, splicing_hits, mydisease = "AD", sets = "splicing", caQTL = FALSE)
+
+scz_splicing_focussed_plot <- bubble_plot(best_per_locus, splicing_hits, mydisease = "SCZ", sets = "splicing", caQTL = FALSE)
+scz_splicing_focussed_plot <- bubble_plot(best_per_locus, splicing_hits, mydisease = "SCZ", sets = "all", caQTL = FALSE)
+
+  #filter(locus %in% c("PILRA", "CD33", "TREM2", "PLCG2")) %>%
+  #group_by(QTL, locus, type, QTL_Gene) %>%
+  # for sQTLs - show best PP4
+  #summarise(PP.H4.abf = max(PP.H4.abf) ) %>%
+  #left_join(all) %>%
+
+ggsave(plot = ad_splicing_loci_plot, filename = here::here("plots/AD_gencode_union_coloc_splicing_loci.png"), width = 12, height = 3, dpi = 600)
+
+ggsave(plot = ad_splicing_focussed_plot, filename = here::here("plots/AD_gencode_union_coloc_splicing_focussed.png"), width = 10, height = 7)
+ggsave(plot = ad_expression_focussed_plot, filename = here::here("plots/AD_gencode_union_coloc_expression_focussed.png"), width = 3.5, height = 10, dpi = 600)
+```
+
+CAMLG is suggestivd hit in ALS and genome-wide hit in PD, nice colocalization with a microglia eQTL
+TBK1 exon skipping QTL in ALS
+GNL3 QTLs in SCZ.
+
+```{r}
+ggsave(plot = pd_splicing_focussed_plot, filename = here::here("plots/PD_gencode_union_coloc_splicing_focussed.pdf"), width = 17, height = 12)
+ggsave(plot = pd_expression_focussed_plot, filename = here::here("plots/PD_gencode_union_coloc_expression_focussed.pdf"), width = 14, height = 12)
+
+
+ggsave(plot = ad_expression_all_plot, filename = here::here("plots/AD_all_coloc.pdf"), width = 18, height = 14)
+
+ggsave(plot = pd_expression_all_plot, filename = here::here("plots/PD_all_coloc.pdf"), width = 18, height = 12)
+```
+
+

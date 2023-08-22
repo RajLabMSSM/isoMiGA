@@ -1,0 +1,132 @@
+---
+title: "MESC"
+author: "Jack Humphrey"
+date: "24/04/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+
+theme_jh <- function () { 
+    theme_bw(base_size=5, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 7)
+        )
+}
+```
+
+
+
+```{r}
+gwas_meta <- readxl::read_excel("../GWAS/GWAS-QTL_data_dictionary.xlsx", sheet = 3)
+qtl_meta <- readxl::read_excel("../GWAS/GWAS-QTL_data_dictionary.xlsx", sheet = 2)
+
+d <- read_tsv(here::here("data/all_mesc_results.tsv"))
+# remove PSP GWAS - too small
+d <- filter(d, gwas != "Farrell_PSP" & !is.na(gwas))
+
+d$disease <- gwas_meta$phenotype[match(d$gwas, gwas_meta$dataset )]
+d$cells <- qtl_meta$label[match(d$qtl, qtl_meta$dataset)]
+d$qtl_n <- qtl_meta$N[match(d$qtl, qtl_meta$dataset)]
+
+d$gwas_n <- gwas_meta$N[match(d$gwas, gwas_meta$dataset)]
+
+writeLines(unique(d$qtl), con = "data/qtl_datasets.txt")
+qtl_labels <- read_tsv("data/qtl_datasets_labelled.txt")
+
+d$qtl_name <- qtl_labels$qtl_name[ match(d$qtl, qtl_labels$qtl)]
+
+
+d <- d %>%
+    mutate(qtl_name = coalesce(qtl_name, qtl)) %>%
+    mutate(gwas_label = paste0(disease, "\n", gwas) ) %>% #, "\n(", prettyNum(gwas_n, big.mark = ","), ")")) %>%
+     mutate(gwas_label = gsub("EUR", "", gwas_label)) %>%
+     mutate(gwas_label = gsub("23andMe", "", gwas_label) ) %>%
+     mutate(gwas_label = gsub("_", " et al, ", gwas_label)) %>%
+     mutate(qtl_label = paste0(qtl_name, " (", qtl_n, ")"))
+
+
+# MAIN FIGURE
+# GWAS - AD, PD, SCZ
+# QTLs - CMC brain, MyND monocytes, isoMiGA microglia
+
+
+plot <- 
+  d %>% 
+  filter( gwas %in% c("Bellenguez_2021", "Nalls23andMe_2019", "TrubetskoyEUR_2022")) %>% 
+  filter( grepl("Monocyte|GENCODE|Brain", qtl_label) ) %>%
+  tidyr::separate(qtl_name, into = c("qtl_tissue", "qtl_type"), sep = " ", remove = FALSE, extra = "merge" ) %>%
+  filter(quantity == "h2med" ) %>% 
+  mutate(qtl_tissue = factor(qtl_tissue, levels = c("GENCODE", "GENCODE+Novel", "Brain", "Monocytes"))) %>%
+  ggplot( aes(x = qtl_type ) ) + 
+  geom_hline(yintercept = 0, linetype = 2, linewidth = 0.1) +
+  geom_errorbar(aes(ymin = estimate_over_h2 - se_estimate_over_h2, ymax = estimate_over_h2 + se_estimate_over_h2), width = 0.25, size = 0.1 ) + 
+  geom_point(aes(x = qtl_type, y = estimate_over_h2, colour = qtl_tissue), size = 0.5 ) + 
+  facet_grid(gwas_label ~ qtl_tissue, scales = "free", space = "free_x", switch = "y") + 
+  theme_classic() + 
+  #coord_flip() + 
+  labs(y = expression(italic(h)["med"]^2 / italic(h)["g"]^2 ), x = "" ) +
+  #scale_x_discrete(limits = rev) +
+  theme_jh() +
+  theme(strip.text.y.left = element_text(angle = 0, size = 5)) + guides(colour = "none") +
+  scale_y_continuous(position = "right", n.breaks = 3) +
+  theme(axis.title.y.right = element_text(size = 5, angle = 0, vjust = 0.5)) +
+  ggeasy::easy_rotate_x_labels(angle = 45, side = "right") +
+  scale_colour_manual( values = c("GENCODE" = "#FF6319", "GENCODE+Novel" = "#6CBE45", "Monocytes" = "black", "Brain" = "black") )
+
+ggsave(plot = plot, filename = "plots/MESC_main_figure.pdf", width = 80, height = 50, units = "mm")
+
+```
+
+
+
+```{r}
+# all GWAS
+d %>% 
+  filter( !gwas %in% c("Kunkle_2019", "Lambert_2013")) %>% #, "VanRheenenEUR_2021")) %>%
+  filter(quantity == "h2med" ) %>% 
+  ggplot( aes(x = qtl_label) ) + 
+  geom_point(aes(x = qtl_label, y = estimate_over_h2, colour = cells) ) + 
+  geom_errorbar(aes(ymin = estimate_over_h2 - se_estimate_over_h2, ymax = estimate_over_h2 + se_estimate_over_h2), width = 0.25 ) + 
+  facet_grid(cells~gwas_label, space = "free", scales = "free_y") + 
+  theme_classic() + 
+  coord_flip() + 
+  geom_hline(yintercept = 0, linetype = 3) +
+  labs(y = expression(italic(h)["med"]^2 / italic(h)["g"]^2 ), x = "" ) +
+  scale_x_discrete(limits = rev) +
+  theme(strip.text.y = element_text(angle = 0))
+```
+
+
+
+```{r}
+## just AD
+d %>% filter(quantity == "h2med", disease == "Alzheimer's Disease" ) %>% 
+  ggplot( aes(x = qtl_label) ) + 
+  geom_point(aes(x = qtl_label, y = estimate_over_h2, colour = cells) ) + 
+  geom_errorbar(aes(ymin = estimate_over_h2 - se_estimate_over_h2, ymax = estimate_over_h2 + se_estimate_over_h2), width = 0.25 ) + 
+  facet_grid(cells~gwas_label, space = "free", scales = "free_y") + 
+  theme_classic() + 
+  coord_flip() + 
+  geom_hline(yintercept = 0, linetype = 3) +
+  labs(y = expression(italic(h)["med"]^2 / italic(h)["g"]^2 ), x = "" ) +
+  scale_x_discrete(limits = rev) +
+  theme(strip.text.y = element_text(angle = 0))
+
+
+
+```
+

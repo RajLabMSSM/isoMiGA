@@ -1,0 +1,1026 @@
+---
+title: "describe stringtie reference"
+author: "Jack Humphrey"
+date: "13/02/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+rerun <- FALSE
+
+theme_jh <- function () { 
+    theme_bw(base_size=5, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 6)
+        )
+}
+```
+
+
+Quality Control
+
+Compare pre-filtered SQANTI to post-filtered SQANTI
+
+```{r}
+pre <- read_tsv("data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_classification.txt.gz")
+sqanti <- read_tsv("data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_filter_sqanti_classification.tsv.gz")
+```
+
+
+
+
+
+Plot:
+
+ - Numbers of transcripts of each SQANTI type, coding and NMD status (sqanti output)
+ 
+ - Average expression of each transcript in a microglia short-read cohort (Roussos TPM matrix)
+
+ - Overlap with ATAC and ChIP peaks (Nott, Cookson, Kosoy peak data) 
+
+```{r}
+
+roussos_tpm <- read_tsv("data/salmon/roussos_combined_transcript_tpm_summary.tsv.gz")
+
+sqanti <- sqanti %>%
+  mutate( coding_class = case_when(
+    coding == "coding" & predicted_NMD == FALSE ~ "protein-coding",
+    coding == "coding" & predicted_NMD == TRUE ~ "coding (NMD)",
+    coding == "non_coding" ~ "non-coding"
+  )) %>% mutate( coding_class = factor(coding_class, levels = c("protein-coding", "coding (NMD)", "non-coding"))) %>%
+  mutate(annotation_class = ifelse(structural_category == "full splice match", "annotated", "novel")) %>%
+  mutate( class_label = case_when(
+    structural_category == "full splice match" ~ "FSM",
+    structural_category == "incomplete splice match" ~ "ISM",
+    structural_category == "novel in catalog" ~ "NIC",
+    structural_category == "novel not in catalog" ~ "NNC",
+    structural_category == "fusion" ~ "FUS",
+    structural_category == "intergenic" ~ "INT",
+    structural_category == "genic" ~ "GEN",
+    structural_category == "antisense" ~ "ANS"
+  ) )
+
+gencode_meta <- read_tsv("~/GENCODE/gencode.v38.primary_assembly.tx2gene.tsv.gz") %>%
+  select(-transcript_id) %>% distinct()
+
+sqanti$gene_name <- gencode_meta$gene_name[match(sqanti$associated_gene, gencode_meta$gene_id)]
+
+# add novel gene names in - from Erica
+novel_gene_names <- read_tsv("data/2023_stringtie_mix/novelgenes_naming.tsv")
+sqanti$gene_name_novel <- novel_gene_names$gene_name[match(sqanti$associated_gene, novel_gene_names$ensembl)]
+sqanti$gene_name <- coalesce(sqanti$gene_name, sqanti$gene_name_novel)
+sqanti$gene_name_novel <- NULL
+
+View(sqanti)
+
+```
+
+
+```{r}
+sqanti_df <- select(sqanti,
+                    isoform, chrom, strand, length, exons, structural_category, structural_label = class_label, annotation_class, coding_class, gene_id = associated_gene, gene_name, coding, ORF_length, CDS_length, predicted_NMD, perc_A_downstream_TTS, seq_A_downstream_TTS, polyA_dist, polyA_motif, N_A_downstream_TTS, 
+                    RC_score = rc_score)
+
+write_tsv(sqanti_df, file = "tables/sqanti_supp_table.tsv")
+```
+
+
+Summaries
+
+```{r}
+dim(sqanti) # 128436  transcripts
+length(unique(sqanti$associated_gene)) # 25956 genes
+table(sqanti$structural_category == "full splice match") # 92,557 annotated transcripts
+# 35,879 transcripts
+
+table( unique(sqanti$associated_gene) %in% gencode_meta$gene_id ) # 23,718 known genes, 2238 novel genes
+
+table( roussos_tpm$transcript_id %in% sqanti$isoform)
+
+length(unique(sqanti$associated_gene))
+
+# isoforms matching known genes
+filter( sqanti, associated_gene %in% gencode_meta$gene_id, structural_category %in% c("incomplete splice match", "novel in catalog", 
+                                                                                      "novel not in catalog")) %>% group_by(structural_category) %>% tally() %>% janitor::adorn_totals()
+
+# breakdown by coding type
+sqanti %>% group_by(structural_category, coding_class) %>% tally() %>% pivot_wider(names_from = "coding_class", values_from = "n") %>%
+  janitor::adorn_totals(where = "col") %>%
+  mutate(pc_prop = `protein-coding` / Total, nmd_prop = `coding (NMD)` / Total) %>% arrange(desc(Total))
+```
+
+# Numbers of genes and isoforms
+
+```{r}
+gtfs <- c(
+  "data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_filter_sqanti.cds.sorted.gtf.gz",
+  "~/GENCODE/gencode.v38.primary_assembly.annotation.gtf.gz",
+  "data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_combined.sorted.gtf.gz")
+names(gtfs) <- c("isoMiGA", "GENCODE", "GENCODE+Novel")
+
+tx_numbers <- function(x){
+  gtf <- gtfs[x]
+  print(gtf)
+  g <- rtracklayer::import(gtf)
+  #g <- g[seqnames(g) %in% paste0("chr", c(1:22, "X","Y"))]
+  genes <- unique(g$gene_id)
+  isoforms <- unique(g$transcript_id)
+  genes_novel <-  genes[grepl("_|AS|novel", genes) & !grepl("PAR_Y", genes)]
+  genes_anno <- length(genes) - length(genes_novel)
+  isoforms_novel <- isoforms[grepl("MSTRG", isoforms)]
+  isoforms_anno <- length(isoforms) - length(isoforms_novel)
+  tibble(reference = x, 
+         genes = length(genes),
+         genes_anno = genes_anno,
+         genes_novel = length(genes_novel),
+         isoforms = length(isoforms),
+         isoforms_anno = isoforms_anno,
+         isoforms_novel = length(isoforms_novel)
+  )
+}
+
+tx_num_file <- "data/2023_stringtie_mix/tx_numbers.txt"
+if(!file.exists(tx_num_file)){
+tx_df <- map_df(names(gtfs), tx_numbers ) %>%
+    mutate(reference_label = factor(reference, levels = c("isoMiGA", "GENCODE", "GENCODE+Novel")))
+write_tsv(tx_df, file = tx_num_file)
+
+}else{
+  tx_df <- read_tsv(tx_num_file)
+}
+tx_number_plot <-
+tx_df %>%
+  pivot_longer(names_to = "type", values_to = "n", cols = !c(reference, reference_label)) %>%
+  tidyr::separate(type, into = c("set", "status"), sep = "_") %>%
+  filter(!is.na(status)) %>%
+  mutate(status = factor(status, levels = c("novel", "anno"))) %>%
+  ggplot(aes(x = reference_label, y = n)) + 
+  geom_col(aes(fill = reference_label, alpha = status), position = "stack") +
+  scale_y_continuous(
+    expand = c(0,0), #breaks = c(0, 100000, 200000, 300000), 
+                     labels = scales::comma_format(big.mark = ",", decimal.mark = ".") ) + #,
+                     #limits = c(0,300000)) +
+  scale_fill_manual(values = c("isoMiGA" = "firebrick2", "GENCODE" = "dodgerblue2", "GENCODE+Novel" = "purple")) +
+  labs(x = "", y = "#") +
+  theme_jh() +
+  scale_alpha_manual(values = c("novel" = 0.5, "anno" = 1)) +
+  ggeasy::easy_rotate_x_labels(angle = 40, side = "right") +
+  #guides(fill = "none") +
+  theme(panel.border = element_blank() ) +
+    theme(legend.position = c(0.8, 0.9), legend.key.height = unit(0.5, unit = "lines"), legend.key.width =  unit(0.5, unit = "lines")) +
+  facet_wrap(~set, scale = "free") +
+  theme(legend.position = "top") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank() )
+
+tx_number_plot
+ggsave(plot = tx_number_plot, filename = "plots/gene_isoform_number_plot.pdf", width = 40, height = 45, units = "mm" )
+
+```
+
+Make SQANTI table for supplement
+
+```{r}
+
+```
+
+
+# SUPPA - number of splicing events
+
+```{r}
+references <- c("stringtie_only", "gencode_v38", "gencode_novel")
+get_suppa_n <- function(ref){
+  folder <- here::here(file.path("data/SUPPA", ref))
+  files <- list.files(path = folder, pattern = "*.ioe", recursive = TRUE, full.names = TRUE)
+  names(files) <- gsub(paste0(ref, "_|_strict.ioe"), "", basename(files) ) 
+  
+  df <- map_df(files, ~{ x <- read_tsv(.x); tibble(n = nrow(x))}, .id = "set")
+  df$reference <- ref
+  return(df)
+}
+
+suppa_df <- map_df( references, get_suppa_n)
+
+suppa_df <- mutate(suppa_df, set_label = case_when(
+  set == "RI" ~ "intron retention",
+  set == "SE" ~ "exon skipping",
+  set == "AF" ~ "alternate first exon",
+  set == "AL" ~ "alternate last exon",
+  set == "A3" ~ "alternate 3' splice",
+  set == "A5" ~ "alternate 5' splice",
+  TRUE ~ set
+)) %>%
+  mutate(reference_label = case_when(
+    reference == "gencode_novel" ~ "GENCODE+Novel",
+    reference == "gencode_v38" ~ "GENCODE",
+    reference == "stringtie_only" ~ "isoMiGA"
+  )) %>%
+  mutate(reference_label = factor(reference_label, levels = c("isoMiGA", "GENCODE", "GENCODE+Novel")))
+
+
+suppa_plot <-
+suppa_df %>%
+  filter(set != "MX") %>%
+  ggplot(aes(x = set_label, y = n)) + 
+  geom_col(aes(fill =reference_label), position = "dodge") +
+  scale_y_continuous(expand = c(0,0),
+                     labels = scales::comma_format(big.mark = ",", decimal.mark = ".")
+                     ) +
+  scale_fill_manual(values = c("isoMiGA" = "firebrick2", "GENCODE" = "dodgerblue2", "GENCODE+Novel" = "purple")) +
+  #facet_wrap(~set_label, nrow = 1, switch = "x") +
+  #scale_x_discrete(limits = rev) +
+  #scale_fill_discrete(limits = rev) +
+  theme_jh() +
+  ggeasy::easy_rotate_x_labels(angle = 40, side = "right") +
+  labs(x = "", y = "# splicing events", fill = "") +
+  theme(legend.position = c(0.8, 0.9), legend.key.height = unit(0.5, unit = "lines"), legend.key.width =  unit(0.5, unit = "lines")) +
+  theme(panel.border = element_blank() )
+ # theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.title.x = element_blank() )
+suppa_plot
+library(patchwork)
+multiplot <- tx_number_plot + suppa_plot + plot_layout(nrow = 1, widths = c(1,2.2), guides = "collect") &
+  theme(legend.position = "top")
+
+multiplot
+ggsave(plot = multiplot, filename = "plots/tx_number_suppa_splice_event_plot.pdf", width = 85, height = 60, units = "mm" )
+```
+
+
+# ATAC-seq
+
+```{r}
+# make TSS coordinates
+library(GenomicRanges)
+
+#cookson <- rtracklayer::import(here::here("external/all_PPMI_iMGL.narrowPeak.sorted.merged.bed"), format = "BED")
+roussos_atac <- rtracklayer::import(here::here("external/Rousso_caQTLs/PeakInfoDetailed_RK_11_25_20.strict.bed"), format = "BED" )
+stringtie_gtf <- rtracklayer::import(here::here("data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_filter_sqanti.cds.sorted.gtf.gz"))
+tx <- stringtie_gtf[stringtie_gtf$type == "transcript"]
+tx$TSS <- ifelse( strand(tx) == "+", start(tx), end(tx))
+
+tss <- GRanges(seqnames = seqnames(tx), ranges = IRanges(start = tx$TSS, end = tx$TSS + 1), 
+               transcript_id = tx$transcript_id)
+
+# get nearest ATAC seq peak to TSS
+atac_distance <- function(sqanti, bed){
+  tss_dist <- as.data.frame(distanceToNearest(tss, subject = bed))
+  tss_dist$transcript_id <- tx$transcript_id[tss_dist$queryHits]
+
+  # add to sqanti
+  atac_distance <- tss_dist$distance[ match(sqanti$isoform, tss_dist$transcript_id)]
+  atac_distance[ is.na(atac_distance)] <- Inf
+
+  return(atac_distance)
+}
+
+#sqanti$atac_cookson <- atac_distance(sqanti, cookson)
+sqanti$atac_roussos <- atac_distance(sqanti, roussos_atac)
+
+
+
+group_by(sqanti,structural_category) %>% 
+  summarise( n_transcripts = n(), # n_overlapping_ATAC_Cookson = sum(atac_cookson == 0), 
+             n_overlapping_ATAC_Roussos = sum(atac_roussos == 0) ) %>%
+  arrange(desc(n_transcripts) ) %>% 
+  janitor::adorn_totals(where = "row")  %>% 
+  #mutate( cookson_prop = signif(n_overlapping_ATAC_Cookson / n_transcripts, digits = 2 ) ) %>%
+ # mutate( cookson_prop = paste0(cookson_prop * 100, "%" ) ) %>%
+  mutate( roussos_prop = signif(n_overlapping_ATAC_Roussos / n_transcripts, digits = 2 ) ) %>%
+  mutate( roussos_prop = paste0(roussos_prop * 100, "%" ) ) %>%
+  knitr::kable()
+
+
+
+```
+
+
+
+```{r}
+
+# plot
+sqanti_novel <- sqanti %>%
+  filter(annotation_class == "novel")
+
+
+tally_df <- 
+  group_by(sqanti_novel, structural_category) %>% 
+  tally() %>%
+  arrange(desc(n) ) %>% 
+  mutate(structural_category = factor(structural_category, levels = structural_category))
+
+# what % are protein-coding?
+perc_pc_df <-  group_by(sqanti_novel, structural_category, coding_class) %>% tally() %>% 
+  pivot_wider(names_from = coding_class, values_from = n) %>%
+  left_join(tally_df) %>%
+  mutate(prop = `protein-coding` / n ) %>%
+  mutate(perc = paste0(signif(100 * prop,2), "%") ) %>%
+  mutate(perc_label = paste0(prettyNum(n, big.mark=","), "\n(", perc, ")"))
+
+sqanti_novel <- sqanti_novel %>%
+  mutate(structural_category = factor(structural_category, levels = tally_df$structural_category)) #%>%
+  #filter(structural_category != "full splice match") 
+
+
+novel_plot <- 
+  ggplot() + geom_bar(data = sqanti_novel, aes(x = structural_category, fill = coding_class)) + 
+  #geom_bar(aes(fill = coding_class)) +
+  geom_text(data = perc_pc_df, size = 5 * 5/14, aes(label = perc_label, x = structural_category, y =n + 2000))  +
+  labs(x = "", fill = "", y = "") +
+ # facet_wrap(~annotation_class, scales = "free", shrink = TRUE) +
+  #facet_grid(. ~ annotation_class, space = "free", scales = "free", shrink = TRUE) +
+  scale_fill_viridis_d(direction = -1) +
+  scale_y_continuous(expand = c(0,0), 
+                  labels = scales::comma_format(big.mark = ",", decimal.mark = "."),
+                     limits = c(0,2.2e4)) +
+  theme_jh(  ) +
+  theme(legend.position = c(0.85, 0.75), panel.border = element_blank() ) +
+  ggeasy::easy_rotate_x_labels(angle = 40, side = "right")
+  
+ggsave(plot = novel_plot, filename = "plots/describe_novel_tx.pdf", width = 60, height = 60, units = "mm")
+
+
+```
+
+Table
+
+```{r}
+perc_pc_df <-  group_by(sqanti, structural_category, coding_class) %>% tally() %>% 
+  pivot_wider(names_from = coding_class, values_from = n) %>%
+  left_join(tally_df) %>%
+  mutate(prop = `protein-coding` / n ) %>%
+  mutate(perc = paste0(signif(100 * prop,2), "%") ) %>%
+  mutate(perc_label = paste0(prettyNum(n, big.mark=","), "\n(", perc, ")"))
+
+```
+
+
+
+Correlate gene and isoform TPMs between long read and short-read
+
+combine long read salmon
+
+```{r}
+# combine all longread samples into 1 matrix
+if(rerun){
+lr_gene_files <- c("data/2023_stringtie_mix/long_read_salmon/raj_longread_results_gene_tpm.tsv", "data/2023_stringtie_mix/long_read_salmon/roussos_longread_results_gene_tpm.tsv" )
+
+all_lr_genes <- map(lr_gene_files, read_tsv ) %>% reduce(left_join, by = "gene_id")
+write_tsv(all_lr_genes, file = "data/2023_stringtie_mix/long_read_salmon/all_lr_samples_gene_tpm.tsv.gz")
+
+lr_tx_files <- c("data/2023_stringtie_mix/long_read_salmon/raj_longread_results_transcript_tpm.tsv", "data/2023_stringtie_mix/long_read_salmon/roussos_longread_results_transcript_tpm.tsv" )
+
+all_lr_tx <- map(lr_tx_files, read_tsv ) %>% reduce(left_join, by = "transcript_id")
+write_tsv(all_lr_tx, file = "data/2023_stringtie_mix/long_read_salmon/all_lr_samples_transcript_tpm.tsv.gz")
+}
+```
+
+
+```{r}
+# summarise transcripts
+summarise_transcripts <- function(df, name){
+  d <- read_tsv(df) %>% column_to_rownames("transcript_id")
+  row.names(d) <-  sub("\\|.*", "", row.names(d))
+  mean_df <- enframe(rowMeans(d), value = paste0(name,"_mean"), name = "transcript_id")
+  median_df <- enframe(apply(d, MARGIN = 1, FUN = median), value = paste0(name, "_median"), name = "transcript_id")
+  res <- inner_join(mean_df, median_df, by = "transcript_id")
+  return(res)
+}
+
+# transcript metadata
+gencode_gene_meta <- read_tsv("~/GENCODE/gencode.v38.primary_assembly.tx2gene.tsv.gz") %>% select(-transcript_id) %>% distinct()
+gencode_tx_meta <- read_tsv("~/GENCODE/gencode.v38.primary_assembly.tx2gene.tsv.gz")
+
+sqanti_tx_meta <- sqanti %>%
+      mutate(ref_class = ifelse(!structural_category %in% c("full splice match", "incomplete splice match"), "novel", "annotated") ) %>%
+      select(transcript_id = "isoform", gene_id = associated_gene, ref_class) %>%
+      left_join(gencode_gene_meta, by = c("gene_id") )
+
+gencode_only_tx_meta <- gencode_tx_meta  %>% filter(!transcript_id %in% sqanti$isoform) %>% mutate(ref_class = "GENCODE-only")
+
+library(ggrastr)
+
+sqanti_gencode_tx <- 
+  bind_rows(
+    sqanti_tx_meta,
+    gencode_only_tx_meta
+  )
+
+all_lr <- summarise_transcripts("data/2023_stringtie_mix/long_read_salmon/all_lr_samples_transcript_tpm.tsv.gz", "all_lr")
+raj_lr <- summarise_transcripts("data/2023_stringtie_mix/long_read_salmon/raj_longread_results_transcript_tpm.tsv", "raj_lr")
+raj_sr <- summarise_transcripts("data/2023_stringtie_mix/short_read_salmon/raj_transcript_tpm.tsv", "raj_sr")
+roussos_lr <- summarise_transcripts("data/2023_stringtie_mix/long_read_salmon/roussos_longread_results_transcript_tpm.tsv", "roussos_lr")
+roussos_sr <- summarise_transcripts("data/2023_stringtie_mix/short_read_salmon/roussos_transcript_tpm.tsv", "roussos_sr")
+
+# collate
+all_tx_res <- list(all_lr, 
+  raj_lr, raj_sr, roussos_lr, roussos_sr
+) %>%
+  reduce(left_join, by = "transcript_id") %>%
+  left_join(sqanti_gencode_tx, by = "transcript_id")
+
+write_tsv(all_tx_res, file = "tables/compare_union_isoform_tpms_long_short.tsv")
+
+# plotting!
+tx_cor_plot <- 
+  function(x = "raj_lr_median", y = "roussos_lr_median", downsample = NULL, facet = FALSE, filter = FALSE, labels = FALSE){
+    all_tx_res$x <- all_tx_res[[x]]
+  all_tx_res$y <- all_tx_res[[y]]
+  if(!is.null(downsample)){
+    all_tx_res <- all_tx_res[ sample(x = 1:nrow(all_tx_res), size = downsample),]
+  }
+  if( filter == TRUE){
+    all_tx_res <- filter(all_tx_res, x > 0.1 & y > 0.1)
+  }
+  tally_df <- group_by(all_tx_res, ref_class) %>% tally()
+  print(tally_df)
+  p <- ggplot(all_tx_res, aes(x = log10(x+0.1) , y = log10(y+0.1), colour = ref_class ) ) +
+           rasterise(geom_point(size = 0.5), dpi = 600)  +
+           ggpubr::stat_cor(aes(label = after_stat(r.label) ), method = "pearson"  ) +
+           theme_classic() +
+           geom_text(data = tally_df, aes(x = 2, y = 4, label = n)  ) +
+           geom_hline(yintercept = log10(0.2), linetype = 3 ) +
+           geom_vline(xintercept = log10(0.2), linetype = 3 ) +
+           #geom_abline() +
+    labs(x = x , y = y) +
+    scale_colour_manual(values = c("#440154FF", "#21908CFF", "orange")) +
+    guides(colour = "none") +
+    theme(axis.text = element_text(colour = "black"),
+          axis.ticks = element_line(colour = "black")) +
+     labs(title = "isoforms")
+  
+  if(facet == TRUE){
+    p <- p + facet_wrap(~ref_class)
+  }
+  if(is.null(labels)){
+     p <- p + labs(x = x , y = y)
+   }else{
+     p <- p + labs(x = labels[1], y = labels[2])
+   }
+  
+  return(p)
+}
+
+
+# sanity checks - compare lr tx
+tx_cor_plot(x = "all_lr_median", y = "raj_lr_median", downsample = 10000, filter = TRUE, facet = TRUE)
+tx_cor_plot(x = "raj_lr_median", y = "roussos_lr_median", downsample = 50000, filter = TRUE)
+
+# compare long and short
+tx_cor_plot(x = "all_lr_median", y = "raj_sr_median", downsample = NULL, filter = TRUE, facet = FALSE)
+
+# current favourite
+final_tx_cor_plot <- 
+  tx_cor_plot(x = "all_lr_median", y = "roussos_sr_median", downsample = NULL, filter = TRUE, facet = TRUE,
+            labels = c(
+                expression("Long-read"~log[10](median~TPM + 0.1)), 
+                expression("Short-read"~log[10](median~TPM + 0.1))
+                       ))
+
+tx_cor_plot(x = "roussos_lr_median", y = "roussos_sr_median", downsample = 10000)
+
+all_tx_res %>%
+  pivot_longer(names_to = "dataset", values_to = "tpm", cols = !c(transcript_id, gene_id, ref_class, gene_name)) %>%
+  filter(dataset == "roussos_sr_median") %>%
+  #filter(tpm > 0.1) %>%
+  filter(grepl("median", dataset)) %>%
+  ggplot(aes(x = ref_class, y = log2(tpm + 0.1))) + 
+  geom_violin(scale = "width") +
+  geom_boxplot(width = 0.1, outlier.colour = NA) + 
+  geom_hline(yintercept = log2(0.1)) +
+  facet_wrap(~dataset)
+
+
+```
+
+Correlate gene-level TPM
+
+```{r}
+
+# summarise transcripts
+summarise_genes <- function(df, name){
+  d <- read_tsv(df) %>% column_to_rownames("gene_id")
+  #row.names(d) <-  sub("\\|.*", "", row.names(d))
+  mean_df <- enframe(rowMeans(d), value = paste0(name,"_mean"), name = "gene_id")
+  median_df <- enframe(apply(d, MARGIN = 1, FUN = median), value = paste0(name, "_median"), name = "gene_id")
+  res <- inner_join(mean_df, median_df, by = "gene_id")
+  return(res)
+}
+
+# gene metadata
+sqanti_gene_meta <- select(sqanti, gene_id = associated_gene, structural_category) %>%
+  mutate(gene_class = ifelse( structural_category %in% c("genic", "intergenic", "antisense", "fusion"), "novel", "annotated")) %>%
+  select(-structural_category) %>%
+  distinct() %>%
+  left_join(gencode_gene_meta, by = "gene_id")
+
+gencode_only_gene_meta <- gencode_gene_meta %>% 
+  filter(!gene_id %in% sqanti_gene$associated_gene) %>% 
+  mutate(gene_class = "GENCODE-only")
+
+
+
+sqanti_gencode_gene_meta <- bind_rows(
+  sqanti_gene_meta,
+  gencode_only_gene_meta
+)
+
+all_lr_g <- summarise_genes("data/2023_stringtie_mix/long_read_salmon/all_lr_samples_gene_tpm.tsv.gz", "all_lr")
+raj_lr_g <- summarise_genes("data/2023_stringtie_mix/long_read_salmon/raj_longread_results_gene_tpm.tsv", "raj_lr")
+raj_sr_g <- summarise_genes("data/2023_stringtie_mix/short_read_salmon/raj_gene_tpm.tsv", "raj_sr")
+roussos_lr_g <- summarise_genes("data/2023_stringtie_mix/long_read_salmon/roussos_longread_results_gene_tpm.tsv", "roussos_lr")
+roussos_sr_g <- summarise_genes("data/2023_stringtie_mix/short_read_salmon/roussos_gene_tpm.tsv", "roussos_sr")
+
+
+# collate
+all_gene_res <- list(
+  all_lr_g, raj_lr_g, raj_sr_g, roussos_lr_g, roussos_sr_g
+) %>%
+  reduce(left_join, by = "gene_id") %>%
+  left_join(sqanti_gencode_gene_meta, by = "gene_id") 
+
+## plotting!
+gene_cor_plot <- function(x = "raj_lr_median", y = "roussos_lr_median", downsample = NULL, facet = FALSE, filter = FALSE, labels = NULL){
+  all_gene_res$x <- all_gene_res[[x]]
+  all_gene_res$y <- all_gene_res[[y]]
+  if(!is.null(downsample)){
+    all_gene_res <- all_gene_res[ sample(x = 1:nrow(all_gene_res), size = downsample),]
+  }
+  if( filter == TRUE){
+    all_gene_res <- filter(all_gene_res, x > 0.1 & y > 0.1)
+  }
+  tally_df <- group_by(all_gene_res, gene_class) %>% tally()
+  print(tally_df)
+   p <- ggplot(all_gene_res, aes(x = log10(x+0.1) , y = log10(y+0.1), colour = gene_class ) ) +
+           rasterise(geom_point(size = 0.5), dpi = 600) +
+           ggpubr::stat_cor(aes(label = after_stat(r.label) ), method = "pearson"  ) +
+           theme_classic() +
+           geom_text(data = tally_df, aes(x = 1.5, y = 4, label = n)  ) +
+           geom_hline(yintercept = log10(0.2), linetype = 3 ) +
+           geom_vline(xintercept = log10(0.2), linetype = 3 ) +
+     theme(strip.background = element_blank() ) +
+           #geom_abline() +
+    scale_colour_manual(values = c("#440154FF", "#21908CFF", "orange")) +
+    guides(colour = "none") +
+    theme(axis.text = element_text(colour = "black"),
+          axis.ticks = element_line(colour = "black")) +
+     labs(title = "genes")
+   
+   if(is.null(labels)){
+     p <- p + labs(x = x , y = y)
+   }else{
+     p <- p + labs(x = labels[1], y = labels[2])
+   }
+  
+  if(facet == TRUE){
+    p <- p + facet_wrap(~gene_class)
+  }
+  return(p)
+}
+# sanity_check
+gene_cor_plot("raj_lr_median", "roussos_lr_median", downsample = NULL, facet=TRUE, filter = TRUE
+           )
+
+gene_cor_plot("raj_lr_median", "raj_sr_median", downsample = NULL, facet=TRUE, filter = TRUE)
+
+
+gene_cor_plot("all_lr_median", "roussos_sr_median", downsample = NULL, facet=TRUE, filter = FALSE,     
+              labels = c(
+                expression("Long-read"~log[10](median~TPM + 0.1)), 
+                expression("Short-read"~log[10](median~TPM + 0.1))
+                       ))
+
+## PLOT FOR PAPER
+final_gene_cor_plot <- gene_cor_plot("all_lr_median", "roussos_sr_median", downsample = NULL, facet=TRUE, filter = TRUE,     
+              labels = c(
+                expression("Long-read"~log[10](median~TPM + 0.1)), 
+                expression("Short-read"~log[10](median~TPM + 0.1))
+                       ))
+
+ggsave(plot = final_tx_cor_plot, filename = "plots/long_short_tx_cor_plot.pdf", width = 7, height = 2.7 )
+ggsave(plot = final_gene_cor_plot, filename = "plots/long_short_gene_cor_plot.pdf", width = 7, height = 2.7 )
+
+
+
+
+gene_cor_plot("roussos_lr_median", "roussos_sr_median", downsample = NULL, facet=TRUE, filter = TRUE)
+
+gene_cor_plot("raj_lr_mean", "raj_sr_mean", downsample = 10000, facet=FALSE)
+gene_cor_plot("roussos_lr_mean", "roussos_sr_mean", downsample = 10000, facet=TRUE)
+
+all_gene_res %>%
+  ggplot(aes(x = gene_class, y = log2(roussos_sr_median + 0.1))) + geom_boxplot() + 
+  geom_hline(yintercept = log2(1.1))
+
+all_gene_res %>%
+  pivot_longer(names_to = "dataset", values_to = "tpm", cols = !c(gene_name, gene_id, gene_class) ) %>%
+  #filter(tpm > 0.1) %>%
+  filter(grepl("median", dataset)) %>%
+  ggplot(aes(x = gene_class, y = log2(tpm + 0.1))) + 
+  geom_violin(scale = "width") +
+  geom_boxplot(width = 0.1) + 
+  geom_hline(yintercept = log2(0.1)) +
+  facet_wrap(~dataset)
+
+```
+
+
+
+
+# Describe distribution of TPMs in Roussos data
+
+```{r}
+tpm_sqanti <- left_join(roussos_tpm, sqanti, by = c("transcript_id" = "isoform")) %>%
+  mutate(structural_category = ifelse(is.na(structural_category), "GENCODE-only", structural_category)) %>%
+  mutate(annotation_class = ifelse(structural_category %in% c("full splice match", "GENCODE-only"), structural_category, "novel"))
+
+table(tpm_sqanti$annotation_class)
+
+tpm_1_df <- 
+  tpm_sqanti %>%
+  group_by( structural_category, tpm = mean_tpm >= 0.1 ) %>% 
+  summarise( n = n()  ) %>%
+  pivot_wider( names_from = tpm, values_from = n) %>%
+  mutate(prop = `TRUE` / (`TRUE` + `FALSE`) ) %>%
+  mutate(prop_label = paste0(signif(prop * 100, 2), "%") )
+
+tpm_y_df <- tpm_sqanti %>%
+  group_by( structural_category ) %>%
+  summarise( max_tpm = log10(max(mean_tpm)))
+
+tpm_plot_df <- left_join(tpm_1_df, tpm_y_df)
+  
+tpm_plot <-
+  tpm_sqanti  %>%
+  mutate(structural_category = forcats::fct_relevel(structural_category, c("full splice match", "GENCODE-only", levels(tally_df$structural_category)))) %>%
+  ggplot(aes(x = structural_category, y = log10(mean_tpm + 1))) + 
+  geom_violin(scale = "width" ) + 
+  geom_boxplot(width = 0.1, outlier.size = 0.5, outlier.colour = NA) +
+  theme_jh() +
+  theme(panel.border = element_blank() ) +
+  ggeasy::easy_rotate_x_labels(angle = 40, side = "right") +
+  labs(y = expression(log[10](mean~TPM + 0.1)), x = "", fill = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(-1,5.5)) +
+  geom_text(data = tpm_plot_df, size = 7 * 5/14, aes(label = prop_label, x = structural_category, y = max_tpm + 0.25 ) ) +
+  geom_hline(yintercept = log10(0.2), linetype = 3) # add TPM  = 0.1 line
+tpm_plot
+
+ggsave(plot = tpm_plot, filename = "plots/describe_tpm.pdf", width = 80, height = 60, units = "mm")
+
+
+```
+
+
+# Describe types of genes found in each reference
+
+```{r}
+union_gtf <- rtracklayer::import("data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_combined.sorted.gtf.gz")
+genetype_df <- read_tsv("data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_combined.genetypes.tsv.gz")
+# genetype_df <- data.frame(type = union_gtf$type, 
+#                           gene_id = union_gtf$gene_id, 
+#                           gene_type = union_gtf$gene_type, 
+#                           gene_name = union_gtf$gene_name, 
+#                           transcript_id =union_gtf$transcript_id, 
+#                           transcript_type = union_gtf$transcript_type) %>%
+#   filter(type == "transcript") %>%
+#   distinct() %>%
+#   mutate(class = case_when(
+#     grepl("MSTRG", transcript_id) ~ "novel",
+#     transcript_id %in% sqanti$isoform ~ "full splice match",
+#     TRUE ~ "GENCODE-only"
+#   ))
+# 
+# write_tsv(genetype_df,file =  "data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_combined.genetypes.tsv.gz")
+
+table(genetype_df$class, genetype_df$transcript_type)
+
+# by gene
+gene_tally_df <- genetype_df %>%
+  filter(class != "novel") %>%
+  select(gene_id, class, gene_type) %>%
+  distinct() %>% group_by(class, gene_type) %>%
+  tally()
+
+type_levels <- gene_tally_df %>% filter(class == "GENCODE-only") %>% arrange( desc(n)) %>% pull(gene_type)
+# save plot for supplement
+gene_type_tally_plot <- 
+  gene_tally_df %>%
+  filter(n > 10) %>%
+  mutate(gene_type = factor(gene_type, levels = type_levels)) %>%
+  ggplot(aes(x = gene_type, y = n )) + geom_col() + facet_wrap(~class) +
+  coord_flip() +
+  scale_x_discrete(limits = rev) +
+  scale_y_log10() +
+  theme_classic() +
+  labs(x = "Gene type") +
+  theme(axis.text = element_text(colour = "black"))
+
+gene_type_tally_plot
+
+ggsave(gene_type_tally_plot, filename = "plots/gene_type_tally_plot.png", dpi = 600, width = 6, height = 5)
+
+
+gene_tally_df %>%
+  group_by(pc = gene_type %in% c("protein_coding", "lncRNA"), class) %>%
+  summarise(n = sum(n)) %>%
+  pivot_wider(names_from = pc, values_from = n) %>%
+  mutate(prop = `TRUE` / (`TRUE`+`FALSE`))
+
+```
+
+
+```{r}
+# compare expressed GENCODE-only transcripts to those not expressed
+go_tx_res <- all_tx_res %>% filter(ref_class == "GENCODE-only") %>%
+  left_join(genetype_df)
+
+# for each type of transcript, what proportion of the total are expressed in each microglia dataset?
+get_prop_expressed <- function(myset){
+go_tx_res %>%
+  rename(dataset = myset) %>%
+  group_by(exp = dataset > 0.1, transcript_type) %>%
+  tally() %>%
+  pivot_wider(names_from = exp, values_from = n, values_fill = 0) %>%
+  mutate(prop = `TRUE` / (`TRUE`+`FALSE`),
+         total = `TRUE` + `FALSE`) %>% 
+  filter(total > 10) %>%
+  arrange(desc(`TRUE`)) %>%
+  mutate(set = myset)
+}
+
+bind_rows(
+get_prop_expressed("raj_lr_median"),
+get_prop_expressed("raj_sr_median"),
+get_prop_expressed("roussos_lr_median"),
+get_prop_expressed("roussos_sr_median")
+) %>%
+  ggplot(aes(y = transcript_type, x = set, fill = prop)) + geom_tile()
+
+
+go_tx_res %>%
+  ggplot(aes(x = log10(all_lr_median + 0.1), y = log10(roussos_sr_median + 0.1) )) + geom_point(aes(colour = transcript_type == "protein_coding")) +
+  facet_wrap(~transcript_type == "protein_coding")
+
+```
+
+Pick a nice representative gene for microglia showing a bunch of different isoform types 
+TREM2 could be nice
+
+
+
+```{r}
+stringtie_gtf <- rtracklayer::import(here::here("data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_filter_sqanti.cds.sorted.gtf.gz"))
+union_gtf <- rtracklayer::import("data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_combined.sorted.gtf.gz")
+
+# this is the salmon estimation with the union GTF
+roussos_tpm_df <- read_tsv("data/salmon/roussos_transcript_tpm.tsv") %>%
+   column_to_rownames(var = "transcript_id")
+
+library(ggtranscript)
+
+sqanti_res <- sqanti
+sqanti_res$gene <- gencode_meta$gene_name[match(sqanti_res$associated_gene, gencode_meta$gene_id)]
+gene_meta <- gencode_meta
+
+# plot isoforms, TPM and class info
+isoform_plot <- function(genename, 
+                         gtf = stringtie_gtf,
+                         n_isoforms = 10,
+                         tpm_value = "log10(TPM + 1)", 
+                         obj_return = "both", 
+                         ref_gtf = NULL, 
+                         colourby = "structural_category",
+                         legend_pos = "right", 
+                         sqanti_res = sqanti, 
+                         tpm_df = roussos_tpm_df, 
+                         min_tpm = NULL,
+                         groupby = "transcript_id",
+                         mylim = c(-0.6,0.6),
+                         min_intron_length = 1000,
+                         atac = FALSE,
+                         coords = NULL,
+                         tpm_type = "both"){
+  require(patchwork)
+  require(ggbio)
+  require(ggtranscript)
+  # allow for matching by stringtie ID 
+  if( all(grepl("^MSTRG.", genename) )){
+    df_loc <- filter(sqanti_res, grepl(paste0(genename, "\\."), isoform))
+  }
+  # if using Ensembl IDs
+  if( all(grepl("^ENSG", genename)) ){
+    if( length(genename) > 1){ genename = paste(genename, collapse = "|")}
+    #df_loc <- filter(sqanti_res, grepl(genename, sqanti_res$associated_gene))
+    df_loc <- gtf[ grepl(genename, gtf$gene_name)] %>% as.data.frame()
+    df_loc <- filter(df_loc, type == "transcript") %>%
+      left_join(sqanti, by = c("transcript_id" = "isoform", "strand"))
+  # if using gene names
+  }else{
+   #stopifnot(all(genename %in% sqanti_res$gene))
+    geneid <- unique(gene_meta$gene_id[gene_meta$gene_name %in% genename])
+    geneid <- paste(geneid, collapse = "|")
+    
+    #df_loc <- filter(sqanti_res, grepl(geneid, sqanti_res$associated_gene))
+    
+    df_loc <- gtf[ grepl(geneid, gtf$gene_id)] %>% as.data.frame()
+    df_loc <- filter(df_loc, type == "transcript") %>%
+      left_join(sqanti, by = c("transcript_id" = "isoform", "strand"))
+    
+    #df_loc <- filter(pre, gene == genename)
+  }
+  stopifnot(nrow(df_loc) > 0)
+  print(df_loc$transcript_id)
+  
+  tpm_loc <- tpm_df[df_loc$transcript_id,]
+
+  tpm_loc$median_tpm <- apply(tpm_loc,MARGIN = 1, FUN = median)
+
+  tpm_top <- arrange(tpm_loc, desc(median_tpm)) %>% rownames_to_column(var = "isoform")
+  if( !is.null(min_tpm)){
+    tpm_top <- filter(tpm_loc, median_tpm >= min_tpm) %>% arrange(desc(median_tpm)) %>% rownames_to_column(var = "isoform")
+  }
+  
+  #tpm_top$isoform <- paste0(tpm_top$tpm_top$isoform)
+  
+  # how to select transcripts for plotting? or ordering?
+  isoforms_loc <- tpm_top$isoform %>% head(n_isoforms)
+  print(isoforms_loc)
+  #select(txdb, keys = keys, columns="TXNAME", keytype="GENEID")
+
+  #autoplot(mg_gtf[ mg_gtf$transcript_id %in% isoforms & mg_gtf$type == "exon"])
+  gtf_loc <- gtf[ gtf$transcript_id %in% isoforms_loc & gtf$type %in% c("exon", "CDS") ]
+
+  gtf_loc$transcript_id <- factor(gtf_loc$transcript_id, levels = rev(isoforms_loc) )
+
+  tpm_df_long_loc <- tpm_loc %>%
+    rownames_to_column(var = "isoform") %>%
+    pivot_longer(cols = !isoform, names_to = "sample", values_to = "TPM") %>%
+    filter(isoform %in% isoforms_loc)
+  
+  tpm_df_long_loc$isoform <- factor(tpm_df_long_loc$isoform, levels = rev(isoforms_loc) )
+  
+  #gtf_loc$assoc_transcript <- df_loc$associated_transcript[match(gtf_loc$transcript_id, df_loc$isoform)]
+  #gtf_loc$annotated <- gtf_loc$assoc_transcript != "novel"
+  gtf_loc$structural_category <- df_loc$structural_category[match(gtf_loc$transcript_id, df_loc$transcript_id)]
+  gtf_loc$structural_category[is.na(gtf_loc$structural_category)] <- "GENCODE-only"
+  
+  gtf_loc$status <- ifelse(gtf_loc$structural_category %in% c("full splice match", "GENCODE-only"), "known", "novel")
+  
+  # ggtranscript
+  exons <- as.data.frame(gtf_loc[ gtf_loc$type == "exon"])
+  cds <- as.data.frame(gtf_loc[gtf_loc$type == "CDS"])
+  # make isoform plot
+  p_isoform <- 
+    exons %>% 
+      ggplot(aes_string(
+        xstart = "start",
+        xend = "end",
+        y = groupby,
+        fill = "structural_category"
+    )) +
+    theme_classic() +
+    geom_intron(arrow.min.intron.length = min_intron_length,
+        data = to_intron(as.data.frame(gtf_loc), "transcript_id"),
+        aes(strand = strand)
+    ) +
+    geom_range(height = 0.25) +
+    geom_range(data = cds) +
+    labs(y = "") +
+    #scale_fill_distiller(name = colourby, palette = "RdBu") + 
+    scale_fill_viridis_d()
+  
+  if(!is.null(coords)){
+    p_isoform <- p_isoform + xlim(coords[1], coords[2])
+  }
+  
+  
+  median_df <- 
+      tpm_df_long_loc  %>% group_by(isoform) %>% summarise(median = median(TPM)) %>% arrange(desc(median))
+  print(median_df)
+  
+  #atac_loc <-  
+   # roussos_atac[ seqnames(roussos_atac) == seqnames(gtf_loc) ]
+  
+  # create little key for isoform class
+  p_class <- 
+    df_loc %>%
+    mutate(isoform = transcript_id) %>%
+    filter(isoform %in% isoforms_loc) %>%
+    left_join(median_df, by = "isoform" ) %>%
+    mutate( coding_combine = coalesce(transcript_type, coding_class)) %>%
+    mutate(fill_class = ifelse(grepl("protein", coding_combine), "Coding", "Non-coding")) %>%
+    mutate( isoform = factor(isoform, levels = rev(isoforms_loc) ) ) %>%
+    ggplot(aes(x = 1, y = isoform)) + 
+    geom_tile( aes(fill = fill_class), colour = "black") +
+    geom_text(aes( label = signif(median,2) ), size = 7 * 5/14) +
+    theme_classic() +
+    scale_x_discrete(expand = c(0,0)) +
+    scale_y_discrete(expand = c(0,0)) +
+    labs(x = "", y = "", fill = "") +
+    theme(axis.text.y = element_blank(), legend.text = element_text(size = 6)) +
+    scale_fill_manual(values = c("white", "gray"))
+  
+  p_tpm <- 
+    #scale_fill_manual(values = c("goldenrod", "black") ) +
+    tpm_df_long_loc %>%
+    ggplot( aes_string(y = "isoform", x = tpm_value ) ) + 
+    geom_jitter(width = 0, height = 0.25, size = 0.1, aes(colour = colourby)) +
+    geom_boxplot(fill = NA, outlier.colour = NA) + labs(y = "") +
+    theme_classic() +
+    #theme_jh() + 
+    geom_vline(xintercept = log10(2), linetype = 3 ) +
+    labs(subtitle = "short-read TPM", colour = "") +
+    scale_colour_viridis_d() + 
+    theme(axis.text.y = element_blank())
+  
+    plot_col <- 3
+    plot_widths <- c(3, 0.25, 0.5)
+
+    return( p_isoform + p_class + p_tpm +
+              plot_layout(ncol = plot_col, widths =  plot_widths) +
+    plot_annotation(title = paste(genename, collapse = "+") ) &
+    theme(legend.position = "top",
+          legend.key.size = unit(0.25, 'cm'), 
+          #legend.text = element_text(size = 5),
+          legend.title = element_blank(), #element_text(size=5), 
+          axis.text = element_text(colour = "black"))
+    
+    )
+    
+}
+
+
+isoform_plot("TREM2", min_tpm = 0.01, gtf = stringtie_gtf, n_isoforms = Inf)
+isoform_plot("TREM2", min_tpm = 0.01, gtf = union_gtf, n_isoforms = Inf)
+
+
+# GBA for Mina
+gba_gene_ids <- c(gene_meta[ gene_meta$gene_name %in% c("GBA", "GBAP1", "MTX1P1", "MTX1" ), ]$gene_id)
+
+
+gba_transcripts <- union_gtf[ union_gtf$gene_id %in% gba_gene_ids] %>% as.data.frame() %>% filter(type == "transcript") %>% pull(transcript_id)
+
+
+gba_plot <- isoform_plot(c("GBA", "GBAP1","MTX1P1", "MTX1" ), gtf = stringtie_gtf, min_tpm = 0, n_isoforms = Inf, min_intron_length = 250)
+
+gba_plot2 <- isoform_plot(c("GBA", "GBAP1","MTX1P1", "MTX1" ), gtf = union_gtf, min_tpm = 0, n_isoforms = Inf, min_intron_length = 250)
+
+ggsave(gba_plot2, width = 18, height = 12, units = "in", filename = "plots/GBA_plot.pdf")
+
+all_tx_res <- read_tsv("tables/compare_union_isoform_tpms_long_short.tsv")
+
+gba_tx_res <- all_tx_res[ all_tx_res$transcript_id %in% gba_transcripts,]
+
+gba_lr_sr_compare <- 
+ggplot(gba_tx_res, aes(x = log10(all_lr_mean + 1), log10(roussos_sr_mean + 1) ) ) + 
+  geom_point(aes(colour = ref_class)) + 
+  facet_wrap(~gene_name, scales = "free") + theme_classic() +
+  labs(x = "log10(mean long read TPM + 1)", y = "log10(mean short read TPM + 1)", colour = "" ) +
+  theme(strip.background = element_blank(), 
+        strip.text = element_text(face = "italic"),
+        legend.position = "bottom")
+
+ggsave(plot =gba_lr_sr_compare, filename = "plots/GBA_long_short_compare.pdf", width = 8, height = 5 )
+
+
+# PLCG2
+isoform_plot(c("ENSG00000197943.10_ENSG00000261218.5", "ENSG00000197943.10", "ENSG00000261218.5"), n_isoforms = Inf, min_tpm = 1 )
+
+# TREM2
+trem2_plot <- isoform_plot(c("TREM2", "TREML1"),n_isoforms = Inf, gtf = union_gtf)
+
+ggsave(plot = trem2_plot, filename = "plots/trem2_treml1_stringtie_isoform_plot.pdf", width = 170, height = 80, units = "mm")
+
+
+# CD33
+cd33_plot <- isoform_plot(c("ENSG00000105383.15_ENSG00000268849.5", "ENSG00000268849.5", "ENSG00000105383.15"), n_isoforms = Inf, min_tpm = 0.01)
+
+
+ggsave(plot = cd33_plot, filename = "plots/siglec11p_cd33_stringtie_isoform_plot.pdf", width = 170, height = 85, units = "mm")
+
+# SIPA1L2
+
+sipa_plot_zoom <- isoform_plot(genename = "SIPA1L2", n_isoforms = Inf, min_tpm = 0.01) 
+
+sipa_plot_zoom <- isoform_plot(genename = "SIPA1L2", n_isoforms = Inf, min_tpm = 0.01, coords = c(232500000, 232650000)) 
+
+
+ggsave(plot = sipa_plot_zoom, filename = "plots/SIPA1L2_stringtie_isoform_plot.pdf", width = 180, height = 80, units = "mm")
+
+
+
+
+```
+
+

@@ -1,0 +1,86 @@
+---
+title: "Genotype QC"
+author: "Jack Humphrey"
+date: "06/03/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(patchwork)
+```
+
+
+```{r}
+sk_list <- list.files("data/somalier", pattern = "*sample_key.tsv", full.names = TRUE)
+cohorts <- c("Gaffney", "Raj", "Roussos", rep("Raj", 3))
+sk_df <- map2_df(sk_list, cohorts, ~{read_tsv(.x) %>% mutate(cohort = .y)} )
+
+cohort_df <- select(sk_df, participant_id, cohort) %>% distinct()
+
+df <- read_tsv("data/somalier/somalier-ancestry.somalier-ancestry.tsv") %>% janitor::clean_names()
+names(df)[1] <- "participant_id"
+df <- left_join(df, cohort_df )
+
+df$Ancestry <- df$given_ancestry
+
+pca_plot <- function(chrt){
+  d <- filter(df, cohort %in% chrt)
+  ref <- filter(df, is.na(cohort))
+  ggplot(d, aes(x = pc1, y = pc2) ) + 
+    geom_point(data = ref, aes(colour = Ancestry), alpha = 0.5, shape = 16) +
+    geom_point(data = d, colour = "black", shape = 15, alpha = 1) +
+    theme_classic() +
+    #scale_shape_manual(values = c(`TRUE` = 15,`FALSE` = 1)) +
+    #scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.25)) +
+    #scale_colour_viridis_d() +
+    guides(shape = "none", colour = guide_legend(override.aes = list(alpha = 1))) +
+    labs(x = "PC1", y = "PC2", title = chrt, colour = "Ancestry (1000 Genomes)") +
+    #scale_colour_brewer(type = "div") +
+    theme(plot.title = element_text(hjust =0, face = "bold")) +
+    theme(legend.position="bottom")
+
+}
+
+
+cohort_table <- function(chrt){
+  df %>%
+  filter(is.na(given_ancestry), cohort == chrt) %>%
+  group_by(predicted_ancestry) %>%
+  tally() %>% 
+  rename("Predicted ancestry" = predicted_ancestry, N = n) %>% 
+  janitor::adorn_totals(where = "row") %>%
+  gridExtra::tableGrob(theme = gridExtra::ttheme_minimal(),rows = NULL )
+}
+
+# pca_plot("Gaffney") + pca_plot("Raj") + pca_plot("Roussos") + 
+# cohort_table("Gaffney") + cohort_table("Raj") + cohort_table("Roussos") + 
+# plot_layout(guides = "collect", heights = c(1,0.5))
+pca_multiplot <- 
+pca_plot("Gaffney") + 
+cohort_table("Gaffney") + 
+pca_plot("Raj") + 
+  cohort_table("Raj") + pca_plot("Roussos") + cohort_table("Roussos") + guide_area() +
+plot_layout(ncol = 2, guides = "collect", widths = c(1,0.5), heights = c(1,1,1,0.25))
+
+
+pca_multiplot
+ggsave(plot = pca_multiplot, filename = "plots/all_donor_somalier_pca_plot.pdf", width = 8, height = 12)
+
+```
+
+Get ancestry estimates for 10 long-read samples
+
+```{r}
+lr_donors <- c("16-078",
+"16-110",
+"17-005",
+"17-009",
+"17-094",
+"18-018")
+
+filter(df, df$participant_id %in% lr_donors)
+
+```
+

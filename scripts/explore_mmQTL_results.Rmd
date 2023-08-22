@@ -1,0 +1,1038 @@
+---
+title: "Explore QTL results"
+author: "Jack Humphrey"
+date: "21/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(UpSetR)
+library(patchwork)
+theme_jh <- function () { 
+    theme_bw(base_size=5, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 7)
+        )
+}
+
+```
+
+# mmQTL results
+
+top_assoc.tsv.gz contains lead association for each feature for each analysis
+the feature metadata is in a separate file
+for transcripts this includes gene name as "group"
+
+for SUPPA, the gene information is embedded in the feature ID
+
+```{r}
+
+res_file <- here::here("mmQTL/v4/all_qtl_results.RData")
+
+if(!file.exists(res_file)){
+dirs <- list.dirs(here::here("mmQTL/v4/"),full.names = FALSE, recursive = FALSE)
+assoc <- here::here(paste0("mmQTL/v4/", dirs, "/", dirs, "_top_assoc.tsv.gz"))
+meta <- here::here(paste0("mmQTL/v4/", dirs, "/phenotype_metadata.tsv"))
+
+file.exists(assoc)
+file.exists(meta)
+
+res <- map2( assoc, meta, ~{
+  a <- read_tsv(.x)
+  m <- read_tsv(.y, col_names = c("chr", "start", "end", "feature", "group"))
+  d <- inner_join(m, a, by = c("feature", "chr"))
+})
+names(res) <- dirs
+
+# set groups
+res$GENCODE_expression$group <- res$GENCODE_expression$feature
+res$union_expression$group <- res$union_expression$feature
+
+res$union_SUPPA_RI$group <- gsub(":.*", "", res$union_SUPPA_RI$feature)
+res$union_SUPPA_AF$group <- gsub(":.*", "", res$union_SUPPA_AF$feature)
+res$GENCODE_SUPPA_RI$group <- gsub(":.*", "", res$GENCODE_SUPPA_RI$feature)
+res$GENCODE_SUPPA_AF$group <- gsub(":.*", "", res$GENCODE_SUPPA_AF$feature)
+res$GENCODE_SUPPA_AL$group <- gsub(":.*", "", res$GENCODE_SUPPA_AL$feature)
+res$union_SUPPA_AL$group <- gsub(":.*", "", res$union_SUPPA_AL$feature)
+res$GENCODE_SUPPA_A3$group <- gsub(":.*", "", res$GENCODE_SUPPA_A3$feature)
+res$union_SUPPA_A3$group <- gsub(":.*", "", res$union_SUPPA_A3$feature)
+res$GENCODE_SUPPA_A5$group <- gsub(":.*", "", res$GENCODE_SUPPA_A5$feature)
+res$union_SUPPA_A5$group <- gsub(":.*", "", res$union_SUPPA_A5$feature)
+res$GENCODE_SUPPA_SE$group <- gsub(":.*", "", res$GENCODE_SUPPA_SE$feature)
+res$union_SUPPA_SE$group <- gsub(":.*", "", res$union_SUPPA_SE$feature)
+
+## for leafcutter
+union_leafcutter_meta <- read_tsv(here::here("mmQTL/v4/union_leafcutter/gencode_novel_leafcutter_junction_metadata.tsv.gz"))
+gencode_leafcutter_meta <- read_tsv(here::here("mmQTL/v4/GENCODE_leafcutter/gencode_v38_leafcutter_junction_metadata.tsv.gz"))
+
+res$GENCODE_leafcutter$group <- gencode_leafcutter_meta$gene[ match(res$GENCODE_leafcutter$group, gencode_leafcutter_meta$group)]
+res$union_leafcutter$group <- union_leafcutter_meta$gene[ match(res$union_leafcutter$group, union_leafcutter_meta$group)]
+
+# fix feature starts and ends
+res$GENCODE_leafcutter$start <- as.numeric(str_split_fixed(res$GENCODE_leafcutter$feature, ":", 4)[,2])
+res$GENCODE_leafcutter$end <- as.numeric(str_split_fixed(res$GENCODE_leafcutter$feature, ":", 4)[,3])
+res$union_leafcutter$start <- as.numeric(str_split_fixed(res$union_leafcutter$feature, ":", 4)[,2])
+res$union_leafcutter$end <- as.numeric(str_split_fixed(res$union_leafcutter$feature, ":", 4)[,3])
+# A3
+res$GENCODE_SUPPA_A3$start <- as.numeric(str_split_fixed(res$GENCODE_SUPPA_A3$feature, ":|-", 8)[,4])
+res$GENCODE_SUPPA_A3$end <- as.numeric(str_split_fixed(res$GENCODE_SUPPA_A3$feature, ":|-", 8)[,7])
+res$union_SUPPA_A3$start <- as.numeric(str_split_fixed(res$union_SUPPA_A3$feature, ":|-", 8)[,4])
+res$union_SUPPA_A3$end <- as.numeric(str_split_fixed(res$union_SUPPA_A3$feature, ":|-", 8)[,7])
+# A5
+res$GENCODE_SUPPA_A5$start <- as.numeric(str_split_fixed(res$GENCODE_SUPPA_A5$feature, ":|-", 8)[,4])
+res$GENCODE_SUPPA_A5$end <- as.numeric(str_split_fixed(res$GENCODE_SUPPA_A5$feature, ":|-", 8)[,7])
+res$union_SUPPA_A5$start <- as.numeric(str_split_fixed(res$union_SUPPA_A5$feature, ":|-", 8)[,4])
+res$union_SUPPA_A5$end <- as.numeric(str_split_fixed(res$union_SUPPA_A5$feature, ":|-", 8)[,7])
+# SE
+res$GENCODE_SUPPA_SE$start <- as.numeric(str_split_fixed(res$GENCODE_SUPPA_SE$feature, ":|-", 8)[,4])
+res$GENCODE_SUPPA_SE$end <- as.numeric(str_split_fixed(res$GENCODE_SUPPA_SE$feature, ":|-", 8)[,7])
+res$union_SUPPA_SE$start <- as.numeric(str_split_fixed(res$union_SUPPA_SE$feature, ":|-", 8)[,4])
+res$union_SUPPA_SE$end <- as.numeric(str_split_fixed(res$union_SUPPA_SE$feature, ":|-", 8)[,7])
+# AF
+res$GENCODE_SUPPA_AF$start <- as.numeric(str_split_fixed(res$GENCODE_SUPPA_AF$feature, ":|-", 10)[,4])
+res$GENCODE_SUPPA_AF$end <- as.numeric(str_split_fixed(res$GENCODE_SUPPA_AF$feature, ":|-", 10)[,9])
+res$union_SUPPA_AF$start <- as.numeric(str_split_fixed(res$union_SUPPA_AF$feature, ":|-", 10)[,4])
+res$union_SUPPA_AF$end <- as.numeric(str_split_fixed(res$union_SUPPA_AF$feature, ":|-", 10)[,9])
+# AL
+res$GENCODE_SUPPA_AL$start <- as.numeric(str_split_fixed(res$GENCODE_SUPPA_AL$feature, ":|-", 10)[,4])
+res$GENCODE_SUPPA_AL$end <- as.numeric(str_split_fixed(res$GENCODE_SUPPA_AL$feature, ":|-", 10)[,9])
+res$union_SUPPA_AL$start <- as.numeric(str_split_fixed(res$union_SUPPA_AL$feature, ":|-", 10)[,4])
+res$union_SUPPA_AL$end <- as.numeric(str_split_fixed(res$union_SUPPA_AL$feature, ":|-", 10)[,9])
+
+save(res, file = res_file)
+}else{
+  load(res_file)
+}
+```
+
+Write out BED file of significant lead SNPs for each QTL run
+
+```{r}
+make_ldsc_bed <- function(data, name){
+  d <- filter(data, qval < 0.05) %>%
+    group_by(group) %>%
+    slice_min(order_by = qval, n =  1) %>% # get lowest qval SNP per gene
+    select(chr, start = pos, end = pos, variant_id) %>%
+    mutate(start = start - 1) %>%
+    distinct() %>%
+    arrange(chr, end)
+  message(" * ", name)
+  message( " * ", nrow(d), " SNPs at qval < 0.05")
+  outfile <- paste0(here::here("mmQTL/v4/"), name, "/", name, "_lead_snps_q0.05.bed")
+  message( " * writing to ", outfile)
+  write_tsv(d, outfile, col_names = FALSE)
+}
+
+#make_ldsc_bed(res$GENCODE_expression, "GENCODE_expression")
+walk2(res, names(res), make_ldsc_bed)
+```
+
+
+Numbers of features tested, numbers of genes, numbers of significant features and significant genes
+
+```{r}
+label_levels <- c("gene expression", "junction usage", "transcript usage", "exon skipping", "intron retention","alternate 3' splice","alternate 5' splice", "alternate first exon", "alternate last exon")
+
+label_pheno <- function(data, col = "phenotype", split =FALSE){
+  if(col != "phenotype"){
+    names(data)[ names(data) == col] <- "phenotype"
+  }
+  if(split == FALSE){
+    data <- mutate(data, phenotype = gsub("GENCODE_|union_", "", phenotype))
+  }
+  data <- 
+    data %>%
+  mutate(phenotype = gsub("SUPPA_","", phenotype)) %>%
+  mutate( phenotype = case_when(
+  phenotype == "RI" ~ "intron retention",
+  phenotype == "SE" ~ "exon skipping",
+  phenotype == "AF" ~ "alternate first exon",
+  phenotype == "AL" ~ "alternate last exon",
+  phenotype == "A3" ~ "alternate 3' splice",
+  phenotype == "A5" ~ "alternate 5' splice",
+  phenotype == "leafcutter" ~ "junction usage",
+  phenotype == "transcript" ~ "transcript usage",
+  phenotype == "expression" ~ "gene expression",
+  TRUE ~ phenotype
+)) %>%
+  mutate(phenotype= factor(phenotype, levels = label_levels)) %>%
+  arrange(phenotype) 
+  
+  names(data)[ names(data) == "phenotype"] <- col
+
+  
+  if( "reference" %in% names(data) ){
+    data <- data %>%
+    mutate(reference = ifelse(reference == "union", "GENCODE+Novel", reference))
+  }
+  return(data)
+}
+
+
+qtl_summary <- map_df( res, ~{
+  sig <- filter(.x , qval < 0.05)
+  tibble( 
+    features = nrow(.x), 
+    sig_features = nrow(sig),
+    null_features = nrow(.x) - nrow(sig),
+    perc_features = signif(nrow(sig) / nrow(.x) *  100, 2),
+    genes = length(unique(.x$group)),
+    sig_genes = length(unique(sig$group)),
+    perc_genes = signif(length(unique(sig$group)) / length(unique(.x$group)) * 100, 2)
+  )
+}, .id = "dataset") %>%
+  tidyr::separate(dataset, into = c("reference", "phenotype"), sep = "_", extra = "merge") %>% 
+  label_pheno() 
+
+qtl_summary
+
+write_csv(qtl_summary, here::here("tables/qtl_result_summary.csv"))
+
+
+qtl_summary_plot <- function(value, title, pad = 0.025, labels = FALSE){
+  df <- qtl_summary
+  max_val <- max(df[[value]])
+  df$pad <-  (pad *max_val) + df[[value]]
+  plot <- df %>%
+    mutate(reference = factor(reference, levels = c("GENCODE+Novel","GENCODE"))) %>%
+  ggplot(aes_string(y = "phenotype", x = value)) + 
+    geom_col(aes(fill = reference), position = position_dodge(width = 0.9), width = 0.8 ) +
+    labs(subtitle = title, y = NULL, fill = "", x = "n") + 
+    geom_text(aes_string(label = value, group = "reference", x = "pad"),
+              position = position_dodge(width = 0.9), size = 5 * 5/14, hjust= 0 ) +
+  #coord_flip() +
+    theme_jh() +
+    scale_x_continuous( limits = c(0, max_val + (20 * pad * max_val) ), expand = c(0,0), labels = NULL ) +
+    scale_fill_discrete(limits = rev) +
+    theme(legend.position = "top", 
+          axis.text = element_text(colour = "black"), 
+          axis.ticks = element_line(colour = "black"),
+          plot.subtitle = element_text(hjust = 0.5)) +
+    scale_y_discrete(limits=rev) 
+  
+  if(labels == FALSE){
+    plot <- plot + 
+      theme(axis.text.y = element_blank() )
+  }
+  return(plot)
+}
+
+qtl_multiplot <-
+  qtl_summary_plot(value = "features", "Features\ntested", labels = TRUE) +
+
+  qtl_summary_plot(value = "sig_features", "Significant\nfeatures") +
+
+  qtl_summary_plot(value = "sig_genes", "Significant\ngenes") +
+  
+  plot_layout(guides = "collect",widths = c(1.1,1,1) ) &
+  theme(legend.position = "right")
+
+ggsave(plot = qtl_multiplot, filename = here::here("plots/qtl_numbers_plot.pdf"),  width = 90, height = 60, units = "mm")  
+```
+
+How many novel QTLs?
+
+```{r}
+filter(res$union_expression, grepl("_", feature)) %>% filter(qval < 0.05) %>% nrow()
+# 456 novel genes
+filter(res$union_transcript, grepl("MSTRG", feature)) %>% filter(qval < 0.05)
+#  5,658 novel transcripts with usage QTLs
+filter(res$union_transcript, grepl("MSTRG", feature)) %>% filter(qval < 0.05) %>% pull(group) %>% unique() %>% length()
+# 3,545 genes
+```
+
+
+
+Compare eQTL discovery rates
+
+
+The GENCODE+Novel reference contains more genes, so uses a lower minimum TPM threshold. This means more genes get through the GENCODE+Novel QTL mapping, and also means that each gene is supported by more cohorts. However, the overall discovery rate is lower.
+
+```{r}
+# count number of contributing cohorts
+res$GENCODE_expression$n_cohorts <- apply( select(res$GENCODE_expression, starts_with("beta_") ), MARGIN = 1, FUN = function(x) sum(!is.na(x) ) )
+res$union_expression$n_cohorts <- apply( select(res$union_expression, starts_with("beta_") ), MARGIN = 1, FUN = function(x) sum(!is.na(x) ) )
+
+eqtls <- full_join(res$GENCODE_expression, res$union_expression, by = c("feature") ) %>%
+  mutate(q_class = case_when(
+    qval.x < 0.05 & qval.y < 0.05 ~ "significant in both",
+    qval.x > 0.05 & qval.y < 0.05 ~ "only GENCODE+Novel",
+    qval.x < 0.05 & qval.y > 0.05 ~ "only GENCODE",
+    qval.x > 0.05 & qval.y > 0.05 ~ "null in both",
+    is.na(qval.x) & !is.na(qval.y) ~ "only tested in GENCODE+Novel",
+    !is.na(qval.x) & is.na(qval.y) ~ "only tested in GENCODE"
+  ))
+
+
+# genes tested in both references more often than not are tested in more cohorts in GENCODE+Novel than in GENCODE only, which should raise power to find effects. But instead
+eqtls %>%
+  filter(q_class %in% c("significant in both", "only GENCODE+Novel","only GENCODE" )) %>%
+ggplot( aes(x = n_cohorts.x, y = n_cohorts.y) ) + geom_jitter(aes(colour = q_class))
+
+
+eqtls %>%
+  filter(q_class %in% c("significant in both", "only GENCODE+Novel","only GENCODE" )) %>%
+  filter(n_cohorts.x == 6 & n_cohorts.y == 6) %>%
+  group_by(q_class) %>% tally()
+
+#ggplot( aes(x = -log10(Random_P.x), y = -log10(Random_P.y) ) ) + geom_point(aes(colour = q_class))
+
+
+
+group_by(eqtls, q_class) %>% tally()
+
+eqtls %>% ggplot(aes(x = q_class,y = n_cohorts.x)) + geom_jitter()
+
+tally_df <- 
+  eqtls %>%
+  group_by(q_class) %>%
+  tally()
+
+
+# compare P-values between all genes
+compare_p_plot <- eqtls %>%
+  filter(!grepl("tested", q_class)) %>%
+  left_join(tally_df, by = "q_class") %>%
+  mutate(q_class = paste0(q_class, " (", prettyNum(n, big.mark = ","), ")")) %>%
+  #filter(variant_id.x == variant_id.y) %>%
+  ggplot(aes(x = -log10(Random_P.x), y = -log10(Random_P.y)) ) + geom_point(aes(colour = q_class)) +
+  labs(x = expression(-log[10](P["GENCODE"]) ), y = expression(-log[10](P["GENCODE+Novel"]) )) +
+  geom_abline(linetype = 3) +
+  theme_classic() +
+  labs(colour = "", subtitle = "eQTL discovery between references") +
+  ggpubr::stat_cor() +
+  theme(legend.position = c(0.8,0.2), legend.background = element_blank(), legend.key = element_rect(colour = "black") )
+
+compare_p_plot
+
+#  facet_grid(n_cohorts.x~n_cohorts.y, scales = "free")
+
+# compare betas between matching SNP-Gene pairs
+matched_tally_df <- 
+ eqtls %>%
+  filter(variant_id.x == variant_id.y) %>%
+  group_by(q_class) %>%
+  tally()
+
+compare_beta_plot <- eqtls  %>%
+  filter(!is.na(q_class)) %>%
+  filter(variant_id.x == variant_id.y) %>%
+  left_join(matched_tally_df, by = "q_class") %>%
+  mutate(q_class = paste0(q_class, " (", prettyNum(n, big.mark = ","), ")")) %>%
+  ggplot(aes(x = fixed_beta.x, y = fixed_beta.y)) + geom_point(aes(colour = q_class)) +
+  labs(x = "GENCODE fixed beta", y = "GENCODE+Novel fixed beta") +
+  theme_classic() +
+  facet_wrap(~q_class) +
+  ggpubr::stat_cor() +
+  geom_abline(linetype = 3) +
+  labs(subtitle = "Fixed effect concordance for matched SNP-gene pairs") +
+  guides(colour = "none")
+
+#compare_multiplot <- compare_p_plot + compare_beta_plot + plot_layout(widths = c(1,1))
+#ggsave(plot = compare_multiplot, filename = "plots/compare_eqtl_meta.pdf", height = 5, width = 10)
+
+write_tsv(eqtls, file = here::here("tables/compare_eqtls_gencode_union.tsv.gz"))
+```
+
+
+```{r}
+# differences in gene types?
+gene_types <- read_tsv("~/GENCODE/gencode.v38.primary_assembly.gene_meta.tsv.gz")
+
+# gencode-only
+go <- filter(eqtls, q_class == "only GENCODE") %>% select(feature) %>% left_join(gene_types, by = c("feature" = "gene_id"))
+
+sqanti <- read_tsv("data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_filter_sqanti_classification.tsv.gz")
+
+novel_tx_meta <- sqanti %>% filter(grepl("MSTRG", isoform)) %>% select(gene_id = associated_gene, transcript_id = isoform)
+
+gencode_tx_meta <- read_tsv("~/GENCODE/gencode.v38.primary_assembly.tx2gene.tsv.gz") 
+
+all_tx_meta <- bind_rows(novel_tx_meta, gencode_tx_meta)
+
+iso_counts_per_gene <- group_by(all_tx_meta, gene_id) %>% tally()
+novel_counts_per_gene <- group_by(novel_tx_meta, gene_id) %>% tally()
+
+eqtls$n_isoforms <- iso_counts_per_gene$n[match(eqtls$feature, iso_counts_per_gene$gene_id)]
+eqtls$n_novel <- novel_counts_per_gene$n[match(eqtls$feature, novel_counts_per_gene$gene_id)]
+
+n_isoform_compare_plot <- 
+eqtls %>%
+  filter(grepl("only GENCODE|significant|null", q_class)) %>%
+  left_join(tally_df, by = "q_class") %>%
+  mutate(q_class = paste0(q_class, "\n(", prettyNum(n, big.mark = ","), ")")) %>%
+  ggplot(aes(x = q_class, y = n_isoforms - n_novel )) + 
+  geom_jitter(width = 0.3, height = 0, aes(colour = q_class) ) +
+  geom_boxplot(notch = TRUE, outlier.color = NA, fill = NA) + 
+  scale_y_log10() +
+  theme_classic() +
+  ggpubr::stat_compare_means(comparisons = list( c(2,3),c(1,2), c(1,3), c(1,4) )) +
+  labs(y = "N", subtitle = "Annotated isoforms per gene", x = "") +
+  guides(colour = "none") +
+  geom_hline(yintercept = 9, linetype = 3) +
+
+eqtls %>%
+  filter(grepl("only GENCODE|significant|null", q_class)) %>%
+  left_join(tally_df, by = "q_class") %>%
+  mutate(q_class = paste0(q_class, "\n(", prettyNum(n, big.mark = ","), ")")) %>%
+  ggplot(aes(x = q_class, y = (n_novel) ))  + 
+  geom_jitter(width = 0.3, height = 0, aes(colour = q_class) ) +
+  geom_boxplot(notch = TRUE, outlier.color = NA, fill = NA) + 
+  scale_y_log10() +
+  theme_classic() +
+  ggpubr::stat_compare_means(comparisons = list( c(2,3),c(1,2), c(1,3), c(1,4) )) +
+  labs(y = "N", x = "", subtitle = "Novel isoforms per gene") +
+  guides(colour = "none") +
+  geom_hline(yintercept = 2, linetype = 3) +
+  
+plot_layout(nrow = 1)
+
+compare_multiplot <- (compare_p_plot + compare_beta_plot + plot_layout(widths = c(1,1))  ) /
+  n_isoform_compare_plot + plot_annotation(tag_levels = "a") & theme(plot.tag = element_text(face = "bold"), axis.text =element_text(colour = "black"))
+
+ggsave(plot = compare_multiplot, filename = "plots/compare_eqtl_meta.png", height = 10, width = 12, dpi = 600)
+
+```
+
+Some genes only pass expression thresholds in one of the two references
+
+
+Shared SNP-Gene pairs show high concordance in effect size, even when only significant in 1 of the two references. 
+21,068 genes pass in GENCODE_Expression, whereas 27,526 pass in union expression, of which 1620 are novel.
+
+Top gene LINC00513 has P = 0 in GENCODE and P = 0.0002 in GENCODE+Novel seems to be weird fluke case where only highly significant in 1 tissue.
+
+No difference in numbers of novel or total isoforms found between the genes with eQTLs only in GENCODE.
+
+```{r}
+sig_genes <- map(res, ~{.x %>% filter(qval < 0.05) %>% pull(group) %>% unique() })
+sig_snps <- map(res, ~{.x %>% filter(qval < 0.05) %>% pull(variant_id) %>% unique() })
+
+library(UpSetR)
+
+union_genes <- sig_genes[grepl("union", names(sig_genes))]
+gencode_genes <- sig_genes[grepl("GENCODE", names(sig_genes))]
+
+upset(fromList(gencode_genes), nsets = 9, nintersects = 20,order.by = "freq")
+upset(fromList(union_genes), nsets = 9, nintersects = 20,order.by = "freq")
+
+# How many genes found in each QTL type are shared across phenotypes?
+percent_shared_genes <- function(genes, ref = "value"){
+  # this removes any genes with "+"
+  #genes <- map(genes, ~{ .x[ !grepl("\\+", .x)]})
+  # this breaks genes down
+  genes <- map(genes, ~{ unique(unlist(str_split(string = .x, pattern = "\\+"))) })
+  dups <- unlist(genes)[ duplicated(unlist(genes))]
+  dup_genes <- map(genes, ~{ g <- .x[ .x %in% dups ]; return(g) })
+  # what proportion of the total genes are shared between different QTL types?
+  tibble(
+    name = names(genes),
+    shared_genes =  map_dbl(dup_genes, length),
+    all_genes = map_dbl(genes, length)
+  ) %>%
+    mutate(sharing = shared_genes / all_genes, unique_genes = all_genes - shared_genes )
+  #enframe( map_dbl(dup_genes, length) / map_dbl(genes, length), value = ref  ) 
+}
+
+# check sharing manually
+#gencode_sharing <- map_df(sig_genes[1:9], ~{tibble(gene=.x)}, .id ="set") %>% group_by(gene) %>% tally() %>% arrange(n)
+
+
+overall_sharing_df <- 
+rbind(
+percent_shared_genes(sig_genes[1:9], "sharing"),  #%>% mutate(phenotype = gsub("GENCODE_", "", phenotype) ),
+percent_shared_genes(sig_genes[10:18], "sharing") #%>% mutate(phenotype = gsub("union_", "", phenotype) )
+) %>%
+  separate(name, into = c("reference", "phenotype"), sep = "_", extra = "merge") %>%
+  label_pheno() %>%
+  mutate(sharing = signif(sharing, 2) )
+
+overall_sharing_df %>%
+  mutate(pad = sharing + (0.05 * max(.$sharing) ) ) %>%
+  mutate(reference = factor(reference, levels = c("GENCODE+Novel","GENCODE"))) %>%
+  ggplot(aes(y = phenotype, x = sharing)) +
+  geom_col(aes(group = reference, fill = reference), position = position_dodge(width = 0.9), width = 0.8) +
+  geom_text(aes(group = reference, label = sharing, x = pad), position = position_dodge(width = 0.9), size = 3 ) +
+  scale_y_discrete(limits = rev) +
+  scale_fill_discrete(limits =rev) +
+  scale_x_continuous(limits = c(0,1.2), expand = c(0,0)) +
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  labs(x = "Genes found in other QTLs", y = "") +
+      theme(
+          axis.text = element_text(colour = "black"), 
+          axis.ticks = element_line(colour = "black"),
+          plot.subtitle = element_text(hjust = 0.5)
+          )
+
+
+
+
+
+write_csv(overall_sharing_df, file = here::here("tables/qtl_overall_sharing.csv"))
+```
+
+
+Pairwise sharing between each QTL type - do certain types of QTL converge on the same genes?
+
+```{r}
+# pairwise jaccard index between each pair
+pairwise_jaccard_plot <- function(genes, title = "", fix_names = TRUE, flip = FALSE){
+
+  # rename phenotypes 
+  pheno_types <- tibble( original = names(genes), phenotype = names(genes) ) %>%
+    label_pheno(col = "phenotype" )
+  names(genes) <- pheno_types$phenotype[ match(names(genes), pheno_types$original)]
+
+  # create matrix of all phenotypes against each other
+  # select either upper or lower triangle
+  # for each pair of phenotypes, calculate jaccard distance
+  pheno_matrix <- outer(label_levels, label_levels, paste, sep="-")
+  
+  all_pairs <- pheno_matrix[upper.tri(pheno_matrix)]
+  if( flip ){
+      all_pairs <- pheno_matrix[lower.tri(pheno_matrix)]
+  }
+  combos <- strsplit(all_pairs, split = "-")
+  
+  #combos <- combn( names(genes), 2, simplify = FALSE) 
+  #a <- 1; b <- 2
+  #if( flip ){ a <- 2; b <- 1}
+  jaccard <- 
+    map_dbl( combos, ~{
+      x <- genes[[.x[1] ]]
+      y <- genes[[.x[2] ]]
+      
+      # genes <- map(genes, ~{ unique(unlist(str_split(string = .x, pattern = "\\+"))) })
+      x <- unique(unlist(str_split(string = x, pattern = "\\+"))) 
+      y <- unique(unlist(str_split(string = y, pattern = "\\+"))) 
+      #x <- x[!grepl("\\+", x)]
+      #y <- y[!grepl("\\+", y)]
+      length(intersect(x,y))  / length(union(x,y)) 
+       
+    })
+  
+  jaccard_df <- data.frame(x = map_chr(combos, ~{.x[1]}), 
+                           y = map_chr(combos, ~{.x[2]}),
+                           jaccard = jaccard, 
+                           stringsAsFactors = FALSE)
+
+  return(jaccard_df)
+  
+}
+
+# heatmap of overall sharing
+
+overall_sharing_plot <- overall_sharing_df %>%
+  ggplot(aes(x = reference, y = phenotype)) + 
+  geom_tile(colour = "black", aes(fill = sharing)) + 
+  geom_text(aes(label = sharing), size = 5*5/14) +
+  scale_y_discrete(limits = rev, expand = c(0,0)) +
+  scale_x_discrete(expand = c(0,0)) +
+  guides(fill = FALSE) +
+  scale_fill_viridis_c(limits = c(0,1) ) +
+  theme_jh() +
+  theme(axis.text.x = element_text(colour = "black"),
+          axis.text.y = element_text(colour = "black") ) +
+  labs(x = "", y = "")
+
+
+# make jaccard plot of both sides of matrix
+pairwise_sharing_plot <- rbind(
+  pairwise_jaccard_plot(sig_genes[1:9], flip = FALSE),
+    pairwise_jaccard_plot(sig_genes[10:18], flip = TRUE),
+  tibble(x = label_levels, y = label_levels, jaccard = NA) # diagonals
+ # pairwise_jaccard_plot(sig_genes[10:18], title = "GENCODE", fix_names = TRUE, flip = TRUE)
+) %>%
+#%>%
+  mutate(jac_label = round(jaccard, 2)) %>%
+  mutate(x = factor(x, levels = label_levels), y = factor(y, levels = label_levels)) %>% 
+  #label_pheno(col ="x") %>%
+   #label_pheno(col = "y") %>%
+  # mutate(x = as.character(y), x = as.character(x) ) %>%
+  #mutate(x = gsub(" ", "\n", x)) %>%
+    ggplot(aes(x = x, y = y, fill = jaccard)) + 
+    geom_tile(colour = "black") +
+      geom_text(aes(label = jac_label), size = 5*5/14) +
+    scale_fill_viridis_c(limits = c(0,0.6) ) + 
+    labs(x = "", y = "") +
+    scale_x_discrete(position = "bottom", expand = c(0,0)) +
+    scale_y_discrete(expand = c(0,0), limits = rev) +
+    theme_jh() +
+    theme(axis.text.x = element_text(hjust = 1, angle = 45, colour = "black"),
+          axis.text.y = element_text(colour = "black") )
+
+overall_sharing_plot + 
+  (pairwise_sharing_plot + theme(axis.text.y = element_blank() ) ) +
+  plot_layout(ncol =2 , widths = c(1,4) )
+
+ggsave(plot = pairwise_sharing_plot, filename = here::here("plots/pairwise_sharing_plot.pdf"), width = 90, height = 62, units = "mm" )
+
+ggsave(plot = overall_sharing_plot, filename = here::here("plots/overall_sharing_plot.pdf"), width = 60, height = 62, units = "mm" )
+
+table(unique(sig_genes[[5]]) %in% unique(unlist(sig_genes[c(1:4,5:9)])) )
+
+
+# pairwise for each reference separately
+# pairwise_jaccard_plot(sig_genes[1:9], title = "GENCODE") +
+#   pairwise_jaccard_plot(sig_genes[10:18], title = "GENCODE + Novel IsoSeq Tx") +
+#   plot_layout(guides = "collect")
+
+# compare each type between references
+ref_compare <- data.frame(gencode = names(sig_genes[1:9]), isoseq = names(sig_genes[10:18]) )
+
+# jaccard overlap between sig genes found with each reference
+# only use genes that were tested in both references
+ref_compare$jaccard <- map_dbl(1:nrow(ref_compare), ~{
+  x_name <- ref_compare[.x, 1]
+  y_name <- ref_compare[.x, 2]
+  background <- intersect( res[[x_name]]$group, res[[y_name]]$group )
+  x <-  sig_genes[[x_name ]]
+  y <- sig_genes[[y_name  ]]
+  x <- x[x %in% background]
+  y <- y[x %in% background]
+  
+  length( intersect( x,y  ) ) / 
+        length(union(x,y ) ) 
+})
+
+ref_compare %>%
+  mutate(gencode = gsub(".*_", "", gencode), isoseq = gsub(".*_", "", isoseq)) %>%
+  mutate(jaccard = signif(jaccard,2))
+ 
+
+```
+
+Do any genes appear in every single QTL type?
+
+```{r}
+gencode_gene_tally <- map_df(sig_genes[1:9], ~{tibble(gene = .x)},.id = "phenotype") %>%
+  group_by(gene) %>%
+  tally() %>%
+  arrange(desc(n))
+
+gencode_gene_tally
+#ENSG00000009790.15 
+# map_df(res, ~{ filter(.x, group == "ENSG00000009790.15", qval < 0.05)}, .id = "phenotype") %>%
+#   ggplot(aes(x = pos, y = fixed_beta)) + geom_point(aes(colour = phenotype))
+```
+
+
+
+## compare direction of effect size between references for same QTL type
+
+```{r}
+compare_two <- function(x, y){
+  x <- select( res[[x]] , feature, variant_id, fixed_beta, fixed_sd, fixed_z, Random_P, qval )
+  y <- select( res[[y]] , feature, variant_id, fixed_beta, fixed_sd, fixed_z, Random_P, qval )
+  
+  df <- inner_join(x,y, by = c("feature", "variant_id"), suffix = c(".x", ".y") )
+  return(df)
+}
+
+d <- compare_two("GENCODE_expression", "union_expression")
+
+cor_df <- map2_df(names(sig_genes)[1:9], names(sig_genes)[10:18], ~{
+  d <- compare_two(.x, .y)
+  tibble(set = .x,
+    beta_cor = cor(d$fixed_beta.x, d$fixed_beta.y),
+    z_cor = cor(d$fixed_z.x, d$fixed_z.y)
+  )
+} )
+
+d %>%
+  #filter(qval.x < 0.05 & qval.y < 0.05) %>%
+  ggplot(aes(x = fixed_beta.x, y = fixed_beta.y)) + geom_point()
+
+compare_two("GENCODE_leafcutter", "union_leafcutter") %>%
+  ggplot(aes(x = fixed_beta.x, y = fixed_beta.y)) + geom_point()
+
+compare_two("GENCODE_transcript", "union_transcript") %>%
+ggplot(aes(x = fixed_beta.x, y = fixed_beta.y)) + geom_point()
+
+compare_two("GENCODE_SUPPA_RI", "union_SUPPA_RI") %>%
+ggplot(aes(x = fixed_beta.x, y = fixed_beta.y)) + geom_point()
+
+compare_two("GENCODE_SUPPA_SE", "union_SUPPA_SE") %>%
+ggplot(aes(x = fixed_beta.x, y = fixed_beta.y )) + geom_point()
+
+library(qvalue)
+source("https://raw.githubusercontent.com/StoreyLab/qvalue/a411fd74703bffd33651aa37ecff318e8c966a64/R/qvalue_trunc.R")
+
+map2_df(names(sig_genes)[1:9], names(sig_genes)[10:18], ~{
+  print(.x)
+  d <- compare_two(.x, .y)
+  
+  p1 <- filter(d, qval.x < 0.05) %>% pull(Random_P.y)
+  p2 <- filter(d, qval.y < 0.05 ) %>% pull(Random_P.x)
+  #p1 <- p1[p1>0]
+  #p2 <- p2[p2>0]
+  n <- length(p1)
+  pi_1 <- 1 - qvalue_truncp(p1)$pi0
+  pi_2 <- 1 - qvalue_truncp(p2)$pi0
+  tibble( set1 = .x, set2 = .y, n = n, pi1_1 = pi_1, pi1_2 = pi_2)   
+})
+
+
+```
+
+Comparing the GENCODE with Union references
+
+
+Novel Transcripts in transcript QTLs
+How many novel transcripts are tested for tuQTLs?
+How many novel transcript have a significant QTL? As a proportion of the total?
+
+```{r}
+table(grepl("MSTRG.", res$union_transcript$feature))
+
+#tx <- res$GENCODE_transcript$feature
+(table(grepl("MSTRG", res$union_transcript$feature),  res$union_transcript$qval < 0.05))
+
+```
+
+13,518 novel transcripts are tested for transcript usage QTLs, of which 5,658 are significant at q< 0.05.
+
+
+
+##
+
+Distance from feature to lead SNP
+
+Rewrite dist_df function to make all variables in single table
+
+Include Nott enhancers and Promoters! Lift over if need be.
+
+
+```{r}
+
+
+# get gene starts and ends from GENCODE v38
+gene_meta_file <- "~/GENCODE/gencode.v38.primary_assembly.gene_meta.tsv.gz"
+gencode_exon_file <- "~/GENCODE/gencode.v38.primary_assembly.exons.RData"
+union_exon_file <- here::here("data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_combined.sorted.exons.RData")
+if( !file.exists(gene_meta_file)){
+  library(GenomicRanges)
+  #gencode_meta <- read_tsv("~/GENCODE/gencode.v38.primary_assembly.tx2gene.tsv.gz")
+  gencode <- rtracklayer::import("~/GENCODE/gencode.v38.primary_assembly.annotation.gtf.gz")
+  gencode_genes <- gencode[ gencode$type == "gene"]
+  
+  gene_meta <- tibble(gene_id = gencode_genes$gene_id, 
+                      gene_name = gencode_genes$gene_name,
+                      chr = as.character(seqnames(gencode_genes)), 
+                      gene_start = start(gencode_genes), 
+                      gene_end = end(gencode_genes),
+                      strand = as.character(strand(gencode_genes) ) 
+                      )
+  
+  write_tsv(gene_meta,gene_meta_file)
+  
+  union <- rtracklayer::import(here::here("data/2023_stringtie_mix/raj_roussos_0922_stringtie_mix_combined.sorted.gtf.gz"))
+  union_exons <- union[ union$type == "exon"]
+  save(union_exons, file = union_exon_file)
+}else{
+  gene_meta <- read_tsv(gene_meta_file)
+  load(union_exon_file)
+}
+
+## add in gene starts and ends
+res_gene <- map(res, ~{
+  left_join(.x , gene_meta, by = c("group" = "gene_id", "chr") )
+})
+
+# load in data
+roussos <- rtracklayer::import(here::here("external/Rousso_caQTLs/PeakInfoDetailed_RK_11_25_20.strict.bed"), format = "BED")
+
+
+# calculate distances for everything
+dist_df <- map_df(res_gene, ~{
+  pos_df <- tibble(gene_id = .x$group, snp_pos = .x$pos, gene_start = .x$gene_start, gene_end = .x$gene_end, strand = .x$strand, qval = .x$qval, sig = .x$qval < 0.05) %>%
+    mutate(dist =  case_when( 
+      strand == "+" ~ snp_pos - gene_start, 
+      strand == "-" ~ gene_end - snp_pos
+    ) )  %>%
+    mutate(within_promoter = strand == "+" & snp_pos >= (gene_start - 10000) & snp_pos < (gene_start + 1000) |
+             strand == "-" & snp_pos <= (gene_end + 10000) & snp_pos >= (gene_end - 1000)
+    ) %>%
+    mutate(within_body = (snp_pos > gene_start) & (snp_pos < gene_end) )
+  # make Grange for SNPs
+  lead_snp_gr <- GRanges(seqnames = .x$chr, ranges = IRanges(
+    start = .x$pos - 1, 
+    end = .x$pos), 
+    id = .x$variant_id)
+  # calculate distance to nearest ATAC peak and exon
+  pos_df$atac_dist <- as.data.frame(distanceToNearest(lead_snp_gr, subject = roussos))$distance
+  pos_df$exon_dist <- as.data.frame(distanceToNearest(lead_snp_gr, subject = union_exons))$distance
+  return(pos_df)
+}, .id = "dataset") %>%
+  tidyr::separate(col = dataset, into = c("reference", "set"), sep = "_", extra = "merge", remove = FALSE) %>%
+  drop_na() # genes that couldn't be matched have NA for start and end
+
+
+dist_df %>% 
+  filter(qval < 0.05) %>%
+  ggplot(aes(x = dist)) + 
+  #geom_histogram() +
+  geom_density(fill = NA, aes(colour = set)) +
+  xlim(-1e6,1e6) + 
+ # geom_vline(xintercept = 3) +
+  facet_wrap(~reference)
+
+# remove genes that have significant eQTLs - does this affect the enrichments?
+eqtl_genes <- map( list(res$GENCODE_expression, res$union_expression), ~{
+  filter(.x, qval < 0.05) %>% pull("feature") }) %>% unlist() %>% unique()
+# 10,223 genes found only with eQTLs
+
+sqtl_genes <- map2(res, names(res), ~{ 
+  if(!grepl("expression", .y) ){
+    filter(.x, !group %in% eqtl_genes & qval < 0.05) %>% pull(group)
+  }
+  }) %>% unlist() %>% unique()
+# 7025 genes found only with sQTLs
+```
+
+
+```{r}
+## plot odds ratios for each QTL set
+fisher_test_plot <- function(res, title = "", xlim = NULL){
+  p <- res %>%
+  mutate(conf.high = ifelse(conf.high > 8, Inf, conf.high)) %>%
+  mutate( padj = p.adjust(p.value, method = "bonferroni")) %>%
+  mutate(plabel = ifelse( padj < 0.05, "*", "")) %>%
+  #tidyr::separate(set, into = c("reference", "phenotype"), sep = "_", extra = "merge") %>% 
+  #label_pheno() %>%
+  mutate(phenotype = forcats::fct_rev(phenotype)) %>%
+  ggplot( aes(x = phenotype, y = estimate, colour = reference )) + 
+  geom_point(position = position_dodge(width = 0.5) ) + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.25, position = position_dodge(width = 0.5), show.legend = FALSE ) + 
+  coord_flip() +
+  geom_hline(yintercept =  1, linetype = 3) +
+  geom_text(aes(x = phenotype, y = 0.5, label = plabel), position = position_dodge(width = 0.5), size = 5*5/14,show.legend = FALSE) +
+  labs(y = "Odds ratio", title = title, x = "") + 
+  theme_jh() #+
+    #theme(legend.background = )
+  
+  if(! is.null(xlim)){p <- p + scale_y_continuous(limits = xlim) }
+  return(p)
+}
+
+# remove any gene with a cis-eQTL
+gene_body_res2 <- dist_df %>% 
+  split(.$dataset) %>%
+  map_df( ~{
+    if( unique(.x$set) != "expression") { .x <-filter(.x, !gene_id %in% eqtl_genes)}
+    if( unique(.x$set) == "expression") { .x <-filter(.x, !gene_id %in% sqtl_genes)}
+    broom::tidy(fisher.test(table( .x$within_body, sig = .x$sig)))
+  }, .id = "set") %>% 
+  separate(col = "set", into = c("reference", "phenotype"), sep = "_", extra = "merge", remove = FALSE) %>%
+  label_pheno() 
+
+## enrichment of lead QTL SNPs directly upstream of promoter
+promoter_res2 <- dist_df %>%
+  split(.$dataset) %>%
+  map_df( ~{
+    if( unique(.x$set) != "expression") { .x <-filter(.x, !gene_id %in% eqtl_genes)}
+    if( unique(.x$set) == "expression") { .x <-filter(.x, !gene_id %in% sqtl_genes)}
+    broom::tidy(fisher.test(table( .x$within_promoter, sig = .x$sig)))
+  }, .id = "set") %>% 
+  separate(col = "set", into = c("reference", "phenotype"), sep = "_", extra = "merge", remove = FALSE) %>%
+  label_pheno() 
+
+atac_res2 <- dist_df %>%
+    split(.$dataset) %>%
+  map_df( ~{
+    if( unique(.x$set) != "expression") { .x <-filter(.x, !gene_id %in% eqtl_genes)}
+    if( unique(.x$set) == "expression") { .x <-filter(.x, !gene_id %in% sqtl_genes)}
+    broom::tidy(fisher.test(table( .x$atac_dist < 100 & .x$atac_dist > -100, sig = .x$sig)))
+  }, .id = "set") %>% 
+  separate(col = "set", into = c("reference", "phenotype"), sep = "_", extra = "merge", remove = FALSE) %>%
+  label_pheno() 
+
+exon_res2 <- dist_df %>%
+    split(.$dataset) %>%
+  map_df( ~{
+    if( unique(.x$set) != "expression") { .x <-filter(.x, !gene_id %in% eqtl_genes)}
+    if( unique(.x$set) == "expression") { .x <-filter(.x, !gene_id %in% sqtl_genes)}
+    broom::tidy(fisher.test(table( .x$exon_dist < 100 & .x$exon_dist > -100, sig = .x$sig)))
+  }, .id = "set") %>% 
+  separate(col = "set", into = c("reference", "phenotype"), sep = "_", extra = "merge", remove = FALSE) %>%
+  label_pheno() 
+
+
+gene_body_plot2 <- fisher_test_plot(gene_body_res2, title = "Lead SNP within gene body")
+promoter_plot2 <- fisher_test_plot(promoter_res2, title = "Lead SNP within 50kbp of TSS")
+atac_plot2 <- fisher_test_plot(atac_res2, title = "Lead SNP within 100bp of ATAC peak")
+exon_plot2 <- fisher_test_plot(exon_res2, title = "Lead SNP within 100bp of exon")
+
+snp_enrich_multiplot <- gene_body_plot2 + 
+  promoter_plot2 + theme(axis.text.y = element_blank() ) +
+  atac_plot2 + theme(axis.text.y = element_blank() ) +
+  exon_plot2 + theme(axis.text.y = element_blank() ) +
+  plot_layout(nrow = 1, guides = "collect")
+
+ggsave(plot = snp_enrich_multiplot, filename = here::here("plots/qtl_snp_enrichment_plot.pdf"), width = 200, height = 60, units = "mm" )
+```
+
+Pull out functional annotation for each lead QTL SNP. 
+
+
+
+Leafcutter sQTLs
+
+match in cluster starts and ends - how many lead SNPs are within the cluster boundaries compared to outside?
+
+```{r}
+
+within_df <- map(res, ~{
+  tibble(within = .x$pos > (.x$start) & .x$pos < (.x$end), sig = .x$qval < 0.05)
+})
+
+within_res <- within_df %>% map_df( ~{ broom::tidy(fisher.test(table(.x$within, .x$sig)))}, .id = "set" ) %>%
+  mutate( padj = p.adjust(p.value, method = "bonferroni")) %>%
+  mutate(plabel = ifelse( padj < 0.05, "*", ""))
+
+within_res  %>%
+  tidyr::separate(set, into = c("reference", "phenotype"), sep = "_", extra = "merge") %>% 
+  mutate(phenotype = forcats::fct_rev(phenotype)) %>%
+  ggplot( aes(x = phenotype, y = estimate, colour = reference )) + geom_point(position = position_dodge(width = 0.5) ) + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.25, position = position_dodge(width = 0.5) ) + 
+  coord_flip() +
+  geom_hline(yintercept =  1, linetype = 3) +
+  geom_text(aes(x = phenotype, y = 0.5, label = plabel), position = position_dodge(width = 0.5)) +
+  labs(y = "Odds ratio", title = "Odds of QTL SNP falling within feature") +
+  theme_classic() +
+  ylim(0,15)
+
+fisher_test_plot(within_res, title = "Odds of QTL SNP falling within feature", xlim = c(0,12) )
+
+```
+
+
+Lead SNP distance to nearest microglia ATAC peak
+
+```{r}
+library(GenomicRanges)
+roussos <- rtracklayer::import(here::here("external/Rousso_caQTLs/PeakInfoDetailed_RK_11_25_20.strict.bed"), format = "BED")
+
+res_atac <- map(res, ~{
+  lead_snp_gr <- GRanges(seqnames = .x$chr, ranges = IRanges(
+  start = .x$pos - 1, 
+  end = .x$pos), 
+  id = .x$variant_id)
+  atac_dist <- as.data.frame(distanceToNearest(lead_snp_gr, subject = roussos))
+  .x$dist <- atac_dist$distance
+  return(.x)
+})
+
+atac_fisher <-  map_df(res_atac, ~{
+      if( !any(grepl("ENSG", .x$feature) ) ){ .x <-filter(.x, !group %in% eqtl_genes)}
+  #.x <- dplyr::filter(.x, group %in% eqtl_genes)
+  d <- tibble(dist = abs(.x$dist) == 0, sig = .x$qval < 0.05)
+  broom::tidy(fisher.test(table(d)))
+}, .id = "set") %>% 
+  mutate( padj = p.adjust(p.value, method = "bonferroni")) %>%
+  mutate(plabel = ifelse( padj < 0.05, "*", ""))
+
+atac_fisher_plot <- fisher_test_plot(atac_fisher, title ="Odds of QTL SNP overlapping microglia ATAC-seq peak" )
+
+atac_fisher_plot
+```
+
+SNPs overlapping exons - CHANGE TO COMBINED REFERENCE EXONS
+
+```{r}
+gencode_exons <- gencode[ gencode$type == "exon"]
+
+#all_genes <- unlist(res) %>% pull(group)
+
+res_exon <- map(res, ~{
+  lead_snp_gr <- GRanges(seqnames = .x$chr, ranges = IRanges(
+  start = .x$pos - 1, 
+  end = .x$pos), 
+  id = .x$variant_id)
+  exon_dist <- as.data.frame(distanceToNearest(lead_snp_gr, subject = gencode_exons))
+  .x$dist <- exon_dist$distance
+  return(.x)
+})
+
+exon_fisher <-  map_df(res_exon, ~{
+  d <- tibble(dist = abs(.x$dist) < 10, sig = .x$qval < 0.05)
+  broom::tidy(fisher.test(table(d)))
+}, .id = "set") 
+
+
+
+exon_fisher_plot <- fisher_test_plot(exon_fisher, title = "QTL SNP overlapping exon")
+exon_fisher_plot 
+
+
+```
+
+Combine plots
+
+```{r}
+gene_body_plot + promoter_plot + atac_fisher_plot + 
+  exon_fisher_plot + 
+  
+  plot_layout(guides = "collect") & ylim(0,6) & labs(x = "") & theme(axis.text= element_text(colour = "black"), plot.title = element_text(size = 5))
+
+bind_rows( 
+  gene_body_res2 %>% mutate(feature = "gene body") %>% mutate( padj = p.adjust(p.value, method = "bonferroni")),
+  promoter_res2 %>% mutate(feature = "promoter") %>% mutate( padj = p.adjust(p.value, method = "bonferroni")),
+  exon_res2 %>% mutate(feature = "exon") %>% mutate( padj = p.adjust(p.value, method = "bonferroni")),
+  atac_res2 %>% mutate(feature = "ATAC peak") %>% mutate( padj = p.adjust(p.value, method = "bonferroni"))
+) %>%
+  mutate(feature = factor(feature, levels = c("ATAC peak", "promoter", "gene body", "exon"))) %>%
+  mutate(p_label = ifelse( padj < 0.05, "*", "")) %>%
+  tidyr::separate(set, into = c("reference", "phenotype"), sep = "_", extra = "merge") %>%
+  mutate(phenotype = forcats::fct_rev(phenotype)) %>%
+  ggplot(aes(x = feature, y = phenotype, fill = estimate)) + geom_tile()  + 
+  geom_text(aes(label = signif(estimate, 2) ), show.legend = FALSE, colour = "white") + 
+  geom_text(aes(label = p_label), nudge_y = 0.33, colour = "white", size = 5) +
+  scale_fill_viridis_c(end = 0.8) +
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) +
+facet_wrap(~reference) + 
+  theme_classic() +
+  theme(axis.text = element_text(colour = 'black')) +
+  labs(y = "", x = "", fill = "odds ratio") 
+
+```
+
+REDO THIS - MAKE SURE THAT eQTL genes are removed for the sQTLs
+
+
+eQTLs are more likely to overlap ATAC-seq peaks than sQTLs
+
+
+
+Spotlight on intron retention QTLs
+
+```{r}
+
+suppa <- res$union_SUPPA_RI
+fisher.test(table(inside_intron = suppa$pos > suppa$start - 100 & suppa$pos < suppa$end + 100, sig = suppa$qval < 0.05))
+
+isoseq_gene_meta <- read_tsv(here::here("mmQTL/v4/union_expression/phenotype_metadata.tsv"), col_names = c("chr", "gene_start", "gene_end", "gene"))
+
+suppa <- left_join(suppa, isoseq_gene_meta, by= c("group" = "gene", "chr"))
+
+fisher.test(table(inside_gene = suppa$pos > suppa$gene_start & suppa$pos < suppa$gene_end , sig = suppa$qval < 0.05))
+
+```
+
+Most intron retention lead SNPs are far outside the intron (72 / 6966  are within 500bp )
+They are also mostly outside of the gene: 256 out of 5875 (that can be associated to a single gene - SUPPA is weird)
+
