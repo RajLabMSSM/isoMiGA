@@ -1,6 +1,6 @@
 # The Isoform-centric Microglia Genomic Atlas (isoMiGA) Project
 
-Jack Humphrey, Erica Brophy, Towfique Raj lab 2023
+Jack Humphrey, Erica Brophy, Towfique Raj lab
 
 ---
 
@@ -19,17 +19,39 @@ We then map genetic associations with isoform usage and other types of RNA splic
 
 ## Manuscript 
 
-In progress
+[Preprint on MedRxiv](https://github.com/RajLabMSSM/isoMiGA)
+
+## Raw Data
+
+[All Long-read data](https://www.synapse.org/#!Synapse:syn52052829)
+
+[Gaffney short-read cohort](https://ega-archive.org/datasets/EGAD00001005736)
+
+[Raj short-read microglia samples](https://dss.niagads.org/datasets/ng00105/)
+
+[Roussos short-read batch 1](https://doi.org/10.7303/syn26207321)
+
+[Roussos short-read batch 2](https://www.synapse.org/#!Synapse:syn52052829)
+
+[Stimulated IMGL short-read](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE240907)
+
+## Processed Data
+
+[Novel isoform GTF and FASTA](https://zenodo.org/record/8290956)
+
+[Count matrices for all cohorts](https://zenodo.org/record/8291211)
+
+[All QTL summary statistics](https://zenodo.org/record/8250771)
 
 ## Pipelines
 
-Short-read RNA-seq processing:  https://github.com/CommonMindConsortium/RAPiD-nf
+[Short-read RNA-seq processing]( https://github.com/CommonMindConsortium/RAPiD-nf)
 
-Long-read RNA-seq processing: https://github.com/RajLabMSSM/isoseq-pipeline  
+[Long-read RNA-seq processing](https://github.com/RajLabMSSM/isoseq-pipeline) 
 
-QTL mapping and meta-analysis: https://github.com/RajLabMSSM/mmQTL-pipeline
+[QTL mapping and meta-analysis](https://github.com/RajLabMSSM/mmQTL-pipeline)
 
-Genotype quality control: https://github.com/RajLabMSSM/Genotype_QC_Pipeline_2.0 
+[Genotype quality control](https://github.com/RajLabMSSM/Genotype_QC_Pipeline_2.0)
 
 
 ## Long-read RNA-seq isoforms
