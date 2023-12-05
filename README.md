@@ -23,7 +23,7 @@ We then map genetic associations with isoform usage and other types of RNA splic
 
 ## Raw Data
 
-[All Long-read data](https://www.synapse.org/#!Synapse:syn52052829)
+[All Long-read data - deposition in progress](https://www.synapse.org/#!Synapse:syn52052829)
 
 [Gaffney short-read cohort](https://ega-archive.org/datasets/EGAD00001005736)
 
